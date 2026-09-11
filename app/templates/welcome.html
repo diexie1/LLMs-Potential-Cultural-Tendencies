@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ app_name }} · 欢迎</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <div class="bg-layer" aria-hidden="true"></div>
+  <div class="bg-veil" aria-hidden="true"></div>
+
+  <div class="app-shell">
+    <main class="page welcome">
+      <div class="brand-badge">南京师范大学 · 心理学院 · RESEARCH LAB</div>
+      <h1>{{ app_name }}</h1>
+      <p class="subtitle">{{ app_subtitle }}</p>
+      <p class="desc">
+        面向心理学量表的大模型批量作答实验平台：支持中英文量表、题目顺序随机化、
+        多模型并行调用，并将结果按原始题序完整保存，用于潜在文化倾向性分析。
+      </p>
+      <div class="welcome-actions">
+        <a class="btn btn-primary" href="/console">进入实验工作台</a>
+        <a class="btn btn-ghost" href="/chat">模型对话测试</a>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <p class="credit-line">
+        <span class="credit-label">项目负责人</span>
+        南京师范大学 心理学院 谢恩慧
+      </p>
+      <p class="credit-line">
+        <span class="credit-label">平台制作人</span>
+        南京师范大学 心理学院 李佳斌
+      </p>
+    </footer>
+  </div>
+</body>
+</html>

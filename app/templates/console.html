@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ app_name }} · 工作台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css?v=5" />
+</head>
+<body>
+  <div class="bg-layer" aria-hidden="true"></div>
+  <div class="bg-veil" aria-hidden="true"></div>
+
+  <div class="app-shell">
+    <div class="page">
+      <header class="topbar">
+        <div class="brand">
+          <strong>{{ app_name }}</strong>
+          <span>{{ app_subtitle }}</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <a class="btn btn-ghost btn-sm" href="/">欢迎页</a>
+          <button class="btn btn-ghost btn-sm" id="btn-keys" type="button">API 密钥</button>
+          <button class="btn btn-ghost btn-sm" id="btn-open-logs" type="button">日志目录</button>
+          <button class="btn btn-ghost btn-sm" id="btn-open-results" type="button">结果目录</button>
+          <a class="btn btn-ghost btn-sm" href="/chat">模型对话测试</a>
+        </div>
+      </header>
+
+      <div class="grid">
+        <section class="card">
+          <h3>数据与结果路径</h3>
+          <div class="row path-row">
+            <label class="field-label">数据目录</label>
+            <input id="data_dir" type="text" value="./data" />
+            <button class="btn btn-ghost btn-sm" id="btn-browse-data" type="button">浏览…</button>
+            <button class="btn btn-ghost btn-sm" id="btn-reload-scales" type="button">刷新量表</button>
+          </div>
+          <div class="row path-row">
+            <label class="field-label">结果目录</label>
+            <input id="results_dir" type="text" value="./results" />
+            <button class="btn btn-ghost btn-sm" id="btn-browse-results" type="button">浏览…</button>
+            <span></span>
+          </div>
+        </section>
+
+        <div class="two-col">
+          <section class="card">
+            <h3>网络状态</h3>
+            <div class="status-pills">
+              <div class="pill pill-ip" id="net-ip">公网 IP: 检测中…</div>
+              <div class="pill pill-proxy" id="net-proxy">系统代理: 检测中…</div>
+            </div>
+            <div class="toolbar">
+              <button class="btn btn-ghost btn-sm" id="btn-refresh-net" type="button">重新检测网络</button>
+            </div>
+          </section>
+
+          <section class="card">
+            <h3>默认 API / 运行参数</h3>
+            <div class="form-inline">
+              <div class="group">
+                <label class="field-label">提供方</label>
+                <select id="provider">
+                  <option value="deepseek">deepseek</option>
+                  <option value="openai">openai</option>
+                  <option value="qwen">qwen</option>
+                  <option value="gemini">gemini</option>
+                </select>
+              </div>
+              <div class="group grow">
+                <label class="field-label">模型</label>
+                <select id="model"></select>
+              </div>
+              <div class="group">
+                <label class="field-label">温度</label>
+                <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.7" />
+              </div>
+              <div class="group">
+                <label class="field-label">并发数</label>
+                <input id="concurrency" type="number" min="1" max="50" step="1" value="5" />
+              </div>
+            </div>
+            <div class="toolbar">
+              <button class="btn btn-ghost btn-sm" id="btn-refresh-models" type="button">刷新模型列表</button>
+              <button class="btn btn-primary btn-sm" id="btn-apply-api-all" type="button">应用默认 API 到全部</button>
+            </div>
+          </section>
+        </div>
+
+        <section class="card">
+          <h3>批量次数</h3>
+          <div class="form-inline">
+            <div class="group">
+              <label class="field-label">英文次数</label>
+              <input id="batch_en" type="number" min="0" step="1" value="100" />
+            </div>
+            <div class="group">
+              <label class="field-label">中文次数</label>
+              <input id="batch_ch" type="number" min="0" step="1" value="100" />
+            </div>
+            <button class="btn btn-ghost btn-sm" id="btn-apply-counts" type="button">应用次数到全部</button>
+            <button class="btn btn-ghost btn-sm" id="btn-save-config" type="button">保存配置</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>量表列表（中英文可分别指定 API / 模型 / 次数）</h3>
+          <div class="table-wrap">
+            <table class="scales">
+              <thead>
+                <tr>
+                  <th class="check" rowspan="2">启用</th>
+                  <th rowspan="2">量表名称</th>
+                  <th colspan="2" class="group-en">英文量表</th>
+                  <th colspan="2" class="group-ch">中文量表</th>
+                  <th rowspan="2">英文题数</th>
+                  <th rowspan="2">中文题数</th>
+                  <th rowspan="2">英文次数</th>
+                  <th rowspan="2">中文次数</th>
+                </tr>
+                <tr>
+                  <th class="group-en">API</th>
+                  <th class="group-en">模型</th>
+                  <th class="group-ch">API</th>
+                  <th class="group-ch">模型</th>
+                </tr>
+              </thead>
+              <tbody id="scales-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>运行控制</h3>
+          <div class="toolbar" style="margin-top:0;">
+            <button class="btn btn-primary" id="btn-start" type="button">▶ 开始运行</button>
+            <button class="btn btn-danger" id="btn-stop" type="button" disabled>■ 停止</button>
+          </div>
+          <div class="progress-wrap" style="margin-top:14px;">
+            <div class="progress-bar"><span id="progress-fill"></span></div>
+            <div class="progress-text" id="progress-text">0 / 0</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>运行日志</h3>
+          <div class="log-box" id="log-box"></div>
+        </section>
+      </div>
+    </div>
+
+    <footer class="site-footer">
+      <p class="credit-line">
+        <span class="credit-label">项目负责人</span>
+        南京师范大学 心理学院 谢恩慧
+      </p>
+      <p class="credit-line">
+        <span class="credit-label">平台制作人</span>
+        南京师范大学 心理学院 李佳斌
+      </p>
+    </footer>
+  </div>
+
+  <div class="modal-mask" id="keys-modal">
+    <div class="modal">
+      <h3>API 密钥</h3>
+      <p class="hint">可分别为 DeepSeek / OpenAI / Qwen / Gemini 填写 API Key 与 Base URL（已预填官方地址，可按需修改）。</p>
+      <div class="block">
+        <h4>DEEPSEEK</h4>
+        <label class="field-label">API Key</label>
+        <input id="key-deepseek" type="password" />
+        <label class="field-label" style="margin-top:8px;display:block;">Base URL</label>
+        <input id="url-deepseek" type="text" />
+      </div>
+      <div class="block">
+        <h4>OPENAI</h4>
+        <label class="field-label">API Key</label>
+        <input id="key-openai" type="password" />
+        <label class="field-label" style="margin-top:8px;display:block;">Base URL</label>
+        <input id="url-openai" type="text" />
+      </div>
+      <div class="block">
+        <h4>QWEN（阿里云 DashScope）</h4>
+        <label class="field-label">API Key</label>
+        <input id="key-qwen" type="password" />
+        <label class="field-label" style="margin-top:8px;display:block;">Base URL</label>
+        <input id="url-qwen" type="text" />
+      </div>
+      <div class="block">
+        <h4>GEMINI（Google）</h4>
+        <label class="field-label">API Key</label>
+        <input id="key-gemini" type="password" />
+        <label class="field-label" style="margin-top:8px;display:block;">Base URL</label>
+        <input id="url-gemini" type="text" />
+      </div>
+      <div class="actions">
+        <button class="btn btn-ghost btn-sm" id="btn-keys-cancel" type="button">取消</button>
+        <button class="btn btn-primary btn-sm" id="btn-keys-save" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/console.js?v=7"></script>
+</body>
+</html>
