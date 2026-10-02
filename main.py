@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -17,8 +18,15 @@ from app.webapp import run_web  # noqa: E402
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="启动本地文化倾向性研究工作台")
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="仅启动本地服务，不自动打开浏览器",
+    )
+    args = parser.parse_args()
     apply_proxy_to_env()
-    run_web(host="127.0.0.1", port=8765, open_browser=True)
+    run_web(host="127.0.0.1", port=8765, open_browser=not args.no_browser)
 
 
 if __name__ == "__main__":

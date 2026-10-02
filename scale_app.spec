@@ -39,6 +39,7 @@ exe = EXE(
     a.datas,
     [],
     name='LLM-Cultural-Orientation',
+    icon=str(root / 'app' / 'static' / 'app.ico'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

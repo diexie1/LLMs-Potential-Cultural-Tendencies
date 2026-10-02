@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / "runtime"
 # 使用官方 Windows embeddable 包，便于整夹迁移
-PYTHON_VERSION = "3.12.8"
+PYTHON_VERSION = "3.13.16"
 EMBED_URL = (
     f"https://www.python.org/ftp/python/{PYTHON_VERSION}/"
     f"python-{PYTHON_VERSION}-embed-amd64.zip"
@@ -61,8 +61,9 @@ def prepare() -> None:
         raise RuntimeError("未找到 python*._pth，嵌入式 Python 不完整")
     pth = pth_files[0]
     # 全部为相对 runtime 目录的路径
+    runtime_version = pth.stem.removeprefix("python")
     pth.write_text(
-        "python312.zip\n"
+        f"python{runtime_version}.zip\n"
         ".\n"
         "Lib\\site-packages\n"
         "import site\n",

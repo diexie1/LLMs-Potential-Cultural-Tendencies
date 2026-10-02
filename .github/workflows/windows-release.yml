@@ -1,0 +1,78 @@
+name: Build Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13.16"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+        shell: pwsh
+
+      - name: Smoke-check the source app
+        run: |
+          python -m compileall -q app main.py
+          python -c "from app.webapp import app; response = app.test_client().get('/'); assert response.status_code == 200, response.status_code"
+        shell: pwsh
+
+      - name: Build standalone executable
+        run: python -m PyInstaller --noconfirm --clean scale_app.spec
+        shell: pwsh
+
+      - name: Smoke-check standalone executable
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE "dist\LLM-Cultural-Orientation.exe"
+          $process = Start-Process -FilePath $exe -ArgumentList "--no-browser" -WindowStyle Hidden -PassThru
+          $ready = $false
+          try {
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 1
+              try {
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:8765/" -TimeoutSec 2
+                if ($response.StatusCode -eq 200) { $ready = $true; break }
+              } catch { }
+            }
+            if (-not $ready) { throw "The packaged app did not serve its home page." }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+        shell: pwsh
+
+      - name: Package release
+        id: package
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($tag -ne "v$version") { throw "Tag $tag does not match VERSION $version." }
+          $stage = Join-Path $env:RUNNER_TEMP "cultural-tendencies-release"
+          New-Item -ItemType Directory -Force -Path $stage, (Join-Path $stage "data") | Out-Null
+          Copy-Item "dist\LLM-Cultural-Orientation.exe" $stage
+          Copy-Item -Path @("README.md", "LICENSE", "VERSION") -Destination $stage -Force
+          Copy-Item "data\README.md" (Join-Path $stage "data")
+          $asset = Join-Path $env:RUNNER_TEMP "LLM-Cultural-Tendencies-Windows-x64-$tag.zip"
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $asset -Force
+          "asset_path=$asset" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$env:GITHUB_REF_NAME" "${{ steps.package.outputs.asset_path }}" --title "$env:GITHUB_REF_NAME" --generate-notes
+        shell: pwsh

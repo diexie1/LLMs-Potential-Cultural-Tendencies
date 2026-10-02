@@ -1,6 +1,7 @@
 results/
 logs/
 user_config.json
+.venv/
 __pycache__/
 app/__pycache__/
 *.pyc
@@ -14,7 +15,8 @@ runtime/
 *.bak
 *.exe
 *.lnk
-data/
+data/*
+!data/README.md
 .idea/
 .DS_Store
 Thumbs.db
