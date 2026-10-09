@@ -33,6 +33,7 @@
     sel.appendChild(loading);
     try {
       const models = await loadModels(provider, force);
+      if ($("provider").value !== provider) return;
       sel.innerHTML = "";
       models.forEach((m) => {
         const opt = document.createElement("option");
@@ -43,9 +44,27 @@
       if (cur && models.includes(cur)) sel.value = cur;
       else if (models.length) sel.value = models[0];
     } catch (e) {
+      if ($("provider").value !== provider) return;
       sel.innerHTML = "";
       console.error(e);
     }
+  }
+
+  function optionalNumber(id) {
+    const raw = String($(id)?.value ?? "").trim();
+    if (!raw) return null;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) throw new Error(`${id} 必须是数字`);
+    return value;
+  }
+
+  function collectGenerationConfig() {
+    return {
+      temperature: optionalNumber("temperature") ?? 0.7,
+      top_p: optionalNumber("top_p") ?? 1,
+      thinking_mode: "disabled",
+      stream: true,
+    };
   }
 
   function appendBubble(role, text) {
@@ -102,6 +121,7 @@
           provider,
           model,
           temperature,
+          generation_config: collectGenerationConfig(),
           messages: history,
         }),
         signal: abortCtrl.signal,
@@ -185,6 +205,8 @@
     .then((cfg) => {
       if (cfg.provider) $("provider").value = cfg.provider;
       if (cfg.temperature != null) $("temperature").value = cfg.temperature;
+      if (cfg.generation_config?.temperature != null) $("temperature").value = cfg.generation_config.temperature;
+      $("top_p").value = cfg.generation_config?.top_p ?? 1;
       return fillModels(true).then(() => {
         if (cfg.model) {
           const sel = $("model");

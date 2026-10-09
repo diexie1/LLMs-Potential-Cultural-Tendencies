@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/style.css?v=5" />
+  <link rel="stylesheet" href="/static/css/style.css?v=29" />
 </head>
 <body>
   <div class="bg-layer" aria-hidden="true"></div>
@@ -59,7 +59,19 @@
           </section>
 
           <section class="card">
-            <h3>默认 API / 运行参数</h3>
+            <h3>模型与生成参数</h3>
+            <div class="preset-bar" aria-label="实验方案">
+              <div class="group grow">
+                <label class="field-label">实验方案</label>
+                <select id="preset_id" aria-label="实验方案">
+                  <option value="custom">自定义（当前配置）</option>
+                </select>
+              </div>
+              <input id="prompt_contract" type="hidden" value="unconstrained" />
+              <input id="cultural_identity" type="hidden" value="none" />
+              <input id="condition_mode" type="hidden" value="custom" />
+              <button class="btn btn-primary btn-sm" id="btn-apply-preset" type="button">应用方案并保存</button>
+            </div>
             <div class="form-inline">
               <div class="group">
                 <label class="field-label">提供方</label>
@@ -79,19 +91,40 @@
                 <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.7" />
               </div>
               <div class="group">
-                <label class="field-label">并发数</label>
-                <input id="concurrency" type="number" min="1" max="50" step="1" value="5" />
+                <label class="field-label">Top-p</label>
+                <input id="top_p" type="number" min="0" max="1" step="0.01" value="1" />
               </div>
+
+            </div>
+            <div hidden>
+              <input id="capture_network" type="checkbox" checked />
+              <input id="capture_model_catalog" type="checkbox" checked />
+              <input id="sample_mode" value="planned" />
+              <input id="max_retries" type="number" value="10" />
+              <input id="max_group_attempts" type="number" value="0" />
+              <input id="network_guard" value="warn" />
             </div>
             <div class="toolbar">
               <button class="btn btn-ghost btn-sm" id="btn-refresh-models" type="button">刷新模型列表</button>
               <button class="btn btn-primary btn-sm" id="btn-apply-api-all" type="button">应用默认 API 到全部</button>
             </div>
+            <details class="quiet-details" id="prompt-preview-panel">
+              <summary>发送文本预览</summary>
+              <div class="form-inline">
+                <div class="group grow"><label class="field-label" for="preview-scale">量表</label><select id="preview-scale"></select></div>
+                <div class="group"><label class="field-label" for="preview-language">语言</label><select id="preview-language"><option value="ch">中文</option><option value="en">英文</option></select></div>
+                <button class="btn btn-ghost btn-sm" id="btn-preview-prompt" type="button">生成预览</button>
+                <button class="btn btn-ghost btn-sm" id="btn-copy-prompt" type="button" disabled>复制完整文本</button>
+              </div>
+              <p class="hint" id="preview-note" role="status">按当前配置预览，不调用模型。下方来源标签不会发送给模型。</p>
+              <div id="preview-sections"></div>
+              <div class="preview-images" id="preview-images"></div>
+            </details>
           </section>
         </div>
 
         <section class="card">
-          <h3>批量次数</h3>
+          <h3>运行规模与并发</h3>
           <div class="form-inline">
             <div class="group">
               <label class="field-label">英文次数</label>
@@ -101,31 +134,38 @@
               <label class="field-label">中文次数</label>
               <input id="batch_ch" type="number" min="0" step="1" value="100" />
             </div>
+            <div class="group">
+              <label class="field-label">单量表 API 并发</label>
+              <input id="concurrency" type="number" min="1" max="{{ max_concurrency }}" step="1" value="5" />
+            </div>
+            <div class="group">
+              <label class="field-label">量表并行数</label>
+              <input id="scale_concurrency" type="number" min="1" max="{{ max_scale_concurrency }}" step="1" value="2" />
+            </div>
             <button class="btn btn-ghost btn-sm" id="btn-apply-counts" type="button">应用次数到全部</button>
+            <div class="group scale-selection-group">
+              <label class="field-label">量表选择</label>
+              <div class="scale-selection-actions" aria-label="量表选择控制">
+                <button class="btn btn-primary btn-sm" id="btn-select-all" type="button">全选</button>
+                <button class="btn btn-ghost btn-sm" id="btn-select-none" type="button">全不选</button>
+              </div>
+            </div>
             <button class="btn btn-ghost btn-sm" id="btn-save-config" type="button">保存配置</button>
           </div>
         </section>
 
         <section class="card">
-          <h3>量表列表（中英文可分别指定 API / 模型 / 次数）</h3>
+          <h3>选择量表与次数</h3>
           <div class="table-wrap">
             <table class="scales">
               <thead>
                 <tr>
-                  <th class="check" rowspan="2">启用</th>
-                  <th rowspan="2">量表名称</th>
-                  <th colspan="2" class="group-en">英文量表</th>
-                  <th colspan="2" class="group-ch">中文量表</th>
-                  <th rowspan="2">英文题数</th>
-                  <th rowspan="2">中文题数</th>
-                  <th rowspan="2">英文次数</th>
-                  <th rowspan="2">中文次数</th>
-                </tr>
-                <tr>
-                  <th class="group-en">API</th>
-                  <th class="group-en">模型</th>
-                  <th class="group-ch">API</th>
-                  <th class="group-ch">模型</th>
+                  <th class="check"><input id="select-all-scales" type="checkbox" title="全选/取消全选量表" aria-label="全选量表" /></th>
+                  <th>量表名称</th>
+                  <th class="group-en">英文次数</th>
+                  <th class="group-ch">中文次数</th>
+                  <th>题序</th>
+                  <th>结构</th>
                 </tr>
               </thead>
               <tbody id="scales-body"></tbody>
@@ -148,11 +188,28 @@
         <section class="card">
           <h3>运行日志</h3>
           <div class="log-box" id="log-box"></div>
+          <details class="quiet-details" id="trial-answers-panel">
+            <summary>查看完整回答</summary>
+            <div class="toolbar">
+              <button class="btn btn-ghost btn-sm" id="btn-refresh-answers" type="button">刷新结果</button>
+              <button class="btn btn-ghost btn-sm" id="btn-export-answers" type="button" disabled>下载完整回答 Excel</button>
+              <button class="btn btn-ghost btn-sm" id="btn-copy-answer" type="button" disabled>复制回答</button>
+            </div>
+            <div class="answer-filters">
+              <div class="group"><label class="field-label" for="answer-run">运行记录</label><select id="answer-run"></select></div>
+              <div class="group"><label class="field-label" for="answer-scale">量表</label><select id="answer-scale"></select></div>
+              <div class="group"><label class="field-label" for="answer-language">语言</label><select id="answer-language"><option value="ch">中文</option><option value="en">英文</option></select></div>
+              <div class="group"><label class="field-label" for="answer-trial">试次</label><select id="answer-trial"></select></div>
+            </div>
+            <p class="hint" id="answer-note" role="status">展开后加载本地结果。</p>
+            <pre class="text-inspector" id="answer-text"></pre>
+          </details>
         </section>
       </div>
     </div>
 
     <footer class="site-footer">
+      <p class="credit-line">v{{ app_version }}</p>
       <p class="credit-line">
         <span class="credit-label">项目负责人</span>
         南京师范大学 心理学院 谢恩慧
@@ -167,7 +224,7 @@
   <div class="modal-mask" id="keys-modal">
     <div class="modal">
       <h3>API 密钥</h3>
-      <p class="hint">可分别为 DeepSeek / OpenAI / Qwen / Gemini 填写 API Key 与 Base URL（已预填官方地址，可按需修改）。</p>
+      <p class="hint">填写你自己的模型 API 密钥；它只保存在本机配置中。</p>
       <div class="block">
         <h4>DEEPSEEK</h4>
         <label class="field-label">API Key</label>
@@ -203,6 +260,6 @@
     </div>
   </div>
 
-  <script src="/static/js/console.js?v=7"></script>
+  <script src="/static/js/console.js?v=33"></script>
 </body>
 </html>

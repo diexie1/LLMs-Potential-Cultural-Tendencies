@@ -32,7 +32,7 @@ if not exist ".venv\Scripts\python.exe" (
 echo Installing platform dependencies...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip
 if errorlevel 1 goto :failed
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
+".venv\Scripts\python.exe" -m pip install -r requirements-lock.txt
 if errorlevel 1 goto :failed
 
 echo.

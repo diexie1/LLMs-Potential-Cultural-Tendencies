@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / "runtime"
 # 使用官方 Windows embeddable 包，便于整夹迁移
-PYTHON_VERSION = "3.13.16"
+PYTHON_VERSION = "3.12.8"
 EMBED_URL = (
     f"https://www.python.org/ftp/python/{PYTHON_VERSION}/"
     f"python-{PYTHON_VERSION}-embed-amd64.zip"
@@ -61,9 +61,8 @@ def prepare() -> None:
         raise RuntimeError("未找到 python*._pth，嵌入式 Python 不完整")
     pth = pth_files[0]
     # 全部为相对 runtime 目录的路径
-    runtime_version = pth.stem.removeprefix("python")
     pth.write_text(
-        f"python{runtime_version}.zip\n"
+        "python312.zip\n"
         ".\n"
         "Lib\\site-packages\n"
         "import site\n",
@@ -98,15 +97,16 @@ def prepare() -> None:
             "pip",
             "install",
             "-r",
-            str(ROOT / "requirements.txt"),
+            str(ROOT / "requirements-lock.txt"),
             "--no-warn-script-location",
         ]
     )
 
     # 清理缓存减小体积
     for p in RUNTIME.rglob("__pycache__"):
+        if not p.resolve().is_relative_to(RUNTIME.resolve()):
+            raise RuntimeError("缓存清理路径超出 runtime")
         shutil.rmtree(p, ignore_errors=True)
-    shutil.rmtree(RUNTIME / "Lib" / "site-packages" / "pip" / "__pycache__", ignore_errors=True)
 
     # Scripts\*.exe 会内嵌安装时的绝对路径；本项目从不依赖它们启动。
     # 写入相对路径包装脚本，需要时用: runtime\pip.bat / runtime\python.exe -m ...

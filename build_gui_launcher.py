@@ -1,94 +1,45 @@
-# -*- coding: utf-8 -*-
-"""Build a portable GUI launcher EXE with custom icon (relative paths)."""
-
+"""Build the relative-path launcher, with matching Windows version metadata."""
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-ICON = ROOT / "app" / "static" / "app.ico"
-OUT_NAME = "大语言模型潜在文化倾向性研究"
-LAUNCHER_PY = ROOT / "_gui_launcher.py"
+sys.path.insert(0, str(ROOT))
+from app import __version__
+
+OUT_NAME = "LLM-Cultural-Tendencies"
 
 
 def main() -> None:
-    if not ICON.exists():
-        raise SystemExit(f"Missing icon: {ICON}")
-
-    # Starts a new console for the server window; this EXE itself is windowed (icon on desktop).
-    LAUNCHER_PY.write_text(
-        "import os\n"
-        "import subprocess\n"
-        "import sys\n"
-        "from pathlib import Path\n"
-        "\n"
-        "CREATE_NEW_CONSOLE = 0x00000010\n"
-        "\n"
-        "def main() -> None:\n"
-        "    if getattr(sys, 'frozen', False):\n"
-        "        root = Path(sys.executable).resolve().parent\n"
-        "    else:\n"
-        "        root = Path(__file__).resolve().parent\n"
-        "    os.chdir(root)\n"
-        "    bat = root / 'launch.bat'\n"
-        "    py = root / 'runtime' / 'python.exe'\n"
-        "    main_py = root / 'main.py'\n"
-        "    if bat.exists():\n"
-        "        subprocess.Popen(\n"
-        "            ['cmd.exe', '/c', str(bat)],\n"
-        "            cwd=str(root),\n"
-        "            creationflags=CREATE_NEW_CONSOLE,\n"
-        "        )\n"
-        "        return\n"
-        "    if py.exists() and main_py.exists():\n"
-        "        subprocess.Popen(\n"
-        "            [str(py), str(main_py)],\n"
-        "            cwd=str(root),\n"
-        "            creationflags=CREATE_NEW_CONSOLE,\n"
-        "        )\n"
-        "        return\n"
-        "    import ctypes\n"
-        "    ctypes.windll.user32.MessageBoxW(\n"
-        "        0,\n"
-        "        'Missing launch.bat or runtime\\\\python.exe',\n"
-        "        'Launch failed',\n"
-        "        0x10,\n"
-        "    )\n"
-        "    raise SystemExit(1)\n"
-        "\n"
-        "if __name__ == '__main__':\n"
-        "    main()\n",
-        encoding="utf-8",
-    )
-
-    py = ROOT / "runtime" / "python.exe"
-    if not py.exists():
-        py = Path(sys.executable)
-
-    cmd = [
-        str(py),
-        "-m",
-        "PyInstaller",
-        "--noconfirm",
-        "--clean",
-        "--onefile",
-        "--windowed",
-        f"--name={OUT_NAME}",
-        f"--icon={ICON}",
-        "--distpath",
-        str(ROOT),
-        "--workpath",
-        str(ROOT / "build_launcher"),
-        "--specpath",
-        str(ROOT / "build_launcher"),
-        str(LAUNCHER_PY),
-    ]
-    print(">", " ".join(cmd))
-    subprocess.check_call(cmd)
-    LAUNCHER_PY.unlink(missing_ok=True)
-    print("Built:", ROOT / f"{OUT_NAME}.exe")
+    if (ROOT / "VERSION").read_text(encoding="utf-8").strip() != __version__:
+        raise SystemExit("VERSION does not match app/__init__.py")
+    work = ROOT / "build_launcher"
+    work.mkdir(exist_ok=True)
+    version_file = work / "windows-version.txt"
+    numbers = tuple(int(part) for part in __version__.split(".")) + (0,)
+    version_file.write_text(f'''VSVersionInfo(
+  ffi=FixedFileInfo(filevers={numbers!r}, prodvers={numbers!r}, mask=0x3f,
+    flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+  kids=[StringFileInfo([StringTable('040904B0', [
+    StringStruct('FileDescription', 'LLM Cultural Tendencies Platform'),
+    StringStruct('FileVersion', '{__version__}.0'),
+    StringStruct('ProductVersion', '{__version__}'),
+    StringStruct('ProductName', 'LLM Cultural Tendencies Platform'),
+    StringStruct('OriginalFilename', '{OUT_NAME}.exe')])]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])])
+''', encoding="utf-8")
+    python = ROOT / "runtime/python.exe"
+    subprocess.run([str(python if python.is_file() else Path(sys.executable)), "-m", "PyInstaller",
+                    "--noconfirm", "--clean", "--onefile", "--windowed", f"--name={OUT_NAME}",
+                    f"--icon={ROOT / 'app/static/app.ico'}", f"--version-file={version_file}",
+                    "--distpath", str(ROOT), "--workpath", str(work), "--specpath", str(work),
+                    str(ROOT / "launcher.py")], cwd=ROOT, check=True)
+    output = ROOT / f"{OUT_NAME}.exe"
+    shutil.copy2(output, ROOT / "大语言模型潜在文化倾向性研究.exe")
+    print(f"Built launcher {__version__}: {output}")
 
 
 if __name__ == "__main__":

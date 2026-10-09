@@ -1,7 +1,11 @@
 results/
 logs/
+*.log
+*.manifest.json
+*.sqlite
+*.db
+*.tmp
 user_config.json
-.venv/
 __pycache__/
 app/__pycache__/
 *.pyc
@@ -11,13 +15,15 @@ dist/
 _gui_launcher.py
 便携版/
 runtime/
+.venv/
 *.spec.bak
 *.bak
-*.exe
-*.lnk
-data/*
-!data/README.md
-.idea/
 .DS_Store
 Thumbs.db
 ~$*.xlsx
+.idea/
+*.exe
+*.lnk
+data/
+
+# API keys belong in the ignored user_config.json; app/config.py is source code

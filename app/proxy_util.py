@@ -115,10 +115,3 @@ def requests_proxies(proxy: Optional[str] = None) -> Optional[dict]:
     if not proxy:
         return None
     return {"http": proxy, "https": proxy}
-
-
-def proxy_status_text() -> str:
-    p = detect_system_proxy()
-    if p:
-        return f"已检测系统代理: {p}"
-    return "未检测到系统代理（将直连）"

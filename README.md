@@ -1,55 +1,69 @@
-# 大语言模型潜在文化倾向性研究平台
+# 大语言模型潜在文化倾向研究平台
 
-当前版本：`0.1.0`
+## 给使用者
 
-## 下载
+当前版本：**1.5.6**。项目负责人：南京师范大学心理学院谢恩慧；平台制作人：南京师范大学心理学院李佳斌。
 
-- **Windows x64 便携版（无需安装 Python）**：打开 [Releases](https://github.com/diexie1/LLMs-Potential-Cultural-Tendencies/releases/latest)，下载 `LLM-Cultural-Tendencies-Windows-x64-*.zip`。
-- **源码**：在仓库页面选择 **Code → Download ZIP**，或下载[主分支源码 ZIP](https://github.com/diexie1/LLMs-Potential-Cultural-Tendencies/archive/refs/heads/main.zip)。
+**Windows 使用者：[下载便携版](https://github.com/diexie1/LLMs-Potential-Cultural-Tendencies/releases/latest)。**
 
-便携版由 GitHub Actions 在 Windows 上构建，解压后双击 `LLM-Cultural-Orientation.exe` 即可启动。整个压缩包需要保留在同一个文件夹中。第一次启动时在浏览器工作台填写所用模型服务的 API 密钥。
+下载 `LLM-Cultural-Tendencies-Windows-x64-v1.5.6.zip`，先解压完整压缩包，然后：
+
+1. 将你自己的量表 Excel 文件放入 `data` 文件夹；本项目不附带研究量表。
+2. 双击 `LLM-Cultural-Tendencies.exe`，也可以使用同目录的中文启动器。
+3. 在工作台填写自己的 API 密钥，选择模型、量表、运行次数和并发数，然后开始运行。
+
+压缩包包含 Windows x64 便携运行环境，无需单独安装 Python。目录可以包含中文、英文和空格；启动器和数据目录按解压后的实际位置定位。请保留完整文件夹结构，在解压后的文件夹内启动。API 密钥、运行结果和日志只保存在本机。关闭启动时的后台窗口会停止平台。
+
+启动窗口会显示实际本地地址；默认端口被其他程序占用时自动选择可用端口。重复启动只复用同一文件夹、同一版本的平台。
+
+## 参数和回答
+
+工作台只提供温度与 Top-p 两项采样参数，Top-p 默认 1。其他采样参数使用所选模型供应商的默认值；平台按供应商接口关闭思考模式。量表原有指导语和题目会原样发送，平台不会要求固定回答格式、编号或回答数量；开放式回答会保存原文。
+
+“主分析·只答分数提示”是一个可选实验方案，只会在量表指导语部分增加一句提示，不会启用 JSON 或槽位格式要求。
+
+单量表 API 并发与量表并行数均接受 1–500 的整数。超限、小数或无效值会明确报错，不会自动修改你填写的数字。
+
+## 实验方案
+
+在“实验方案”中选择以下模式，点击“应用方案并保存”：
+
+| 方案 | 温度 | Top-p | 新增指导语 |
+| --- | --- | --- | --- |
+| 主分析 | 0 | 1 | 无 |
+| 主分析·温度 1 | 1 | 1 | 无 |
+| 主分析·只答分数提示 | 0 | 1 | 请仅给出题目要求的分数，不需要解释。 |
+| 中国身份条件 | 0 | 1 | 在中国出生并生活的普通人身份提示 |
+| 美国身份条件 | 0 | 1 | 在美国出生并生活的普通人身份提示 |
+
+身份提示按量表语言自动采用中文或英文，放在原指导语之前；不修改 Excel。切换并应用其他方案时，会清除之前的身份提示。具体提示词和记录方式见 [实验模式](docs/实验模式.md)。
+
+量表行只显示题序状态，不能更改。平台按已确认的量表规则自动执行：科尔伯格三份访谈及三种困境固定原顺序；归因偏差与直觉推理限定范围乱序；其余量表整行乱序。详见 [量表乱序规则](docs/量表乱序规则.md)。
+
+## 查看发送文本与完整回答
+
+- 在模型设置中展开“发送文本预览”，可按量表和语言查看、复制当前配置生成的文本及附图。来源标签只在页面显示，不发送给模型；乱序预览为示例顺序，不改变正式试次。
+- 在运行日志下方展开“查看完整回答”，可按运行、量表、语言和试次查看原始回答，并下载完整回答 Excel。
+- 运行结束或停止后，平台在本次运行的结果文件夹中自动生成 `试次完整回答.xlsx`，每行一个试次。超长回答续写到同一行后续列；原 JSON 与逐题 CSV 保留。
 
 ## 从源码运行
 
-源码运行需要 Python 3.10 或更新版本，并且首次安装依赖时需要联网。
+GitHub 的 **Code → Download ZIP** 提供源码，需要先准备运行环境：
 
-### Windows
+- Windows：安装 Python 3.10 或更新版本，双击 `setup_windows.bat` 安装项目环境，再双击 `launch.bat`。
+- macOS / Linux：运行 `sh setup.sh`，再运行 `sh run_macos.sh`。
+- Windows 便携环境：已有系统 Python 时，运行 `一键准备便携环境.bat`，随后运行 `launch.bat`。
 
-1. 安装 [Python](https://www.python.org/downloads/)；安装时启用 Python Launcher（`py`）或将 Python 加入 PATH。
-2. 双击 `setup_windows.bat`，等待依赖安装完成。
-3. 双击 `launch.bat`。也可以在 PowerShell 运行：
+首次准备源码环境需要联网。Windows 便携包已包含环境；模型调用仍需要自己的 API 密钥和网络。
 
-   ```powershell
-   .\.venv\Scripts\python.exe main.py
-   ```
+维护者制作新便携包：
 
-### macOS / Linux
-
-```bash
-python3 --version
-sh setup.sh
-sh run_macos.sh
+```powershell
+runtime\python.exe build_portable_zip.py
 ```
 
-启动后浏览器会打开本机工作台（`http://127.0.0.1:8765`）。关闭启动窗口或按 `Ctrl+C` 可停止服务。
+生成的压缩包位于 `dist` 文件夹，不包含量表、API 密钥、运行结果或日志。
 
-## 添加自己的量表
+## 最新审查
 
-公开仓库和便携版**不包含研究量表或问卷文件**。将你有权使用的 `.xlsx` 量表放入程序旁的 `data` 文件夹，在工作台刷新量表列表即可。
-
-表格格式说明见 [`data/README.md`](data/README.md)：工作簿使用 `Sheet1`（英文）和 `Sheet2`（中文）；每张表的 A 列依次放置标题、作答说明和题目。没有量表文件时，平台仍可启动，但不会显示可运行的量表。
-
-## API 密钥与结果
-
-- 在工作台的设置中填写服务商、API 密钥和模型。密钥保存在本机 `user_config.json`，不会提交到 Git。
-- 批次结果保存在 `results`，运行日志保存在 `logs`；这两个目录也不会提交到 Git。
-- 只把你有权限公开的源码和材料放入公开仓库；不要提交 API 密钥、受限问卷或个人数据。
-
-## Windows 版本构建
-
-推送形如 `v0.1.0` 的 Git 标签后，GitHub Actions 会使用 Python 3.13 构建 Windows x64 单文件程序，并自动在该标签下创建 Release。Release 包只含平台程序和使用说明，不含量表。
-
-## 署名
-
-- 项目负责人：南京师范大学心理学院 谢恩慧
-- 平台制作人：南京师范大学心理学院 李佳斌
+当前解析器为 `free-text-v10`。发布与路径兼容说明见 [便携发布说明](docs/便携发布-1.5.6.md)。

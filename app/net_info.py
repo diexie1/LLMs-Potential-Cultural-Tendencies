@@ -106,5 +106,11 @@ def network_status_text(ip_info: Optional[dict] = None, proxy: Optional[str] = N
     loc = ip_info.get("location") or "未知"
     org = ip_info.get("org") or ""
     org_part = f"（{org}）" if org else ""
-    proxy_part = f"系统代理: {proxy}" if proxy else "系统代理: 未检测到（直连）"
+    if proxy:
+        from .provenance import sanitize_proxy
+
+        proxy_display = sanitize_proxy(proxy).get("display") or "已配置（已隐藏）"
+        proxy_part = f"系统代理: {proxy_display}"
+    else:
+        proxy_part = "系统代理: 未检测到（直连）"
     return f"公网 IP: {ip}  |  位置: {loc}{org_part}  |  {proxy_part}"
