@@ -93,6 +93,13 @@ def check_copy(archive: Path, base: Path, label: str, version: str, use_launcher
         sheet.append(["Please answer the question."])
         sheet.append(["1. Synthetic question."])
     workbook.save(root / "data" / "Synthetic 中文 scale.xlsx")
+    workbook.close()
+    chinese_only = Workbook()
+    chinese_only.active.title = "Sheet2"
+    for value in ("Synthetic Chinese-only fixture", "Please answer the question.", "1. Synthetic question."):
+        chinese_only.active.append([value])
+    chinese_only.save(root / "data" / "Synthetic 仅中文.xlsx")
+    chinese_only.close()
     env = dict(os.environ)
     env["PATH"] = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32")
     env.pop("PYTHONPATH", None)
@@ -123,15 +130,23 @@ def check_copy(archive: Path, base: Path, label: str, version: str, use_launcher
                 with OPENER.open(url + route, timeout=3) as response:
                     assert response.status == 200, route
             loaded = request_json(url + "/api/scales")
-            assert len(loaded["scales"]) == 1
-            assert loaded["scales"][0]["en_n"] == loaded["scales"][0]["ch_n"] == 1
+            assert len(loaded["scales"]) == 2
+            scales = {scale["name"]: scale for scale in loaded["scales"]}
+            bilingual = scales["Synthetic 中文 scale"]
+            assert bilingual["en_n"] == bilingual["ch_n"] == 1
+            assert scales["Synthetic 仅中文"]["en_n"] == 0
+            assert scales["Synthetic 仅中文"]["ch_n"] == 1
             for language in ("en", "ch"):
                 preview = request_json(url + "/api/prompt-preview", {
-                    "scale_name": loaded["scales"][0]["name"], "language": language,
+                    "scale_name": bilingual["name"], "language": language,
                     "config": {"data_dir": "./data"},
                 })
                 assert "Synthetic question." in preview["prompt"], preview
                 assert preview["sections"], preview
+            chinese_preview = request_json(url + "/api/prompt-preview", {
+                "scale_name": "Synthetic 仅中文", "language": "ch", "config": {"data_dir": "./data"},
+            })
+            assert "Synthetic question." in chinese_preview["prompt"], chinese_preview
             assert request_json(url + "/api/config", {"data_dir": "./data", "results_dir": "./results"})["ok"]
             assert (root / "user_config.json").is_file()
             assert request_json(url + "/api/meta")["version"] == version
@@ -152,7 +167,7 @@ def check_copy(archive: Path, base: Path, label: str, version: str, use_launcher
             return {"path_case": label, "launcher": use_launcher, "renamed": use_launcher,
                     "system_python_on_path": False, "version": version, "status": "passed",
                     "occupied_port_handled": bool(blocker), "manifest_files": len(manifest["files"]),
-                    "prompt_preview_languages": ["en", "ch"]}
+                    "prompt_preview_languages": ["en", "ch"], "single_language_scale": "passed"}
         except Exception:
             output.flush()
             print(output_path.read_text(encoding="utf-8", errors="replace"), flush=True)
