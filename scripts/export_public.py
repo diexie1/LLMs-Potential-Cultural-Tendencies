@@ -11,7 +11,7 @@ PUBLIC_ROOTS = {"app", "scripts", "tests", ".github"}
 PUBLIC_FILES = {".gitignore", ".gitattributes", "LICENSE", "VERSION", "README.md", "平台使用手册.md",
                 "main.py", "launcher.py", "launch.bat", "setup_windows.bat", "setup.sh", "run_macos.sh",
                 "prepare_runtime.py", "build_gui_launcher.py", "build_portable_zip.py",
-                "requirements.txt", "requirements-lock.txt", "一键准备便携环境.bat", "检查环境.bat"}
+                "requirements.txt", "requirements-lock.txt", "一键准备便携环境.bat", "检查环境.bat", "data/README.md"}
 PUBLIC_DOCS = {"docs/实验模式.md", "docs/量表乱序规则.md", "docs/便携发布-1.5.6.md", "docs/便携发布-1.5.10.md", "docs/便携发布-1.5.15.md", "docs/答案解析规则.md"}
 SECRET = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{24,}|gh[pousr]_[A-Za-z0-9]{24,}|AIza[A-Za-z0-9_-]{30,})\b")
 OBSOLETE_FILES = {"scale_app.spec"}

@@ -186,7 +186,9 @@ def main():
         cases = [check_copy(archive, base, "English path with spaces", version, False),
                  check_copy(archive, base, "中文 解压路径", version, True)]
     args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(json.dumps({"version": version, "cases": cases}, ensure_ascii=False, indent=2), encoding="utf-8")
+    args.report.write_text(json.dumps({"version": version, "archive": archive.name,
+                                      "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                                      "cases": cases}, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(cases, ensure_ascii=False))
 
 

@@ -17,7 +17,7 @@ DOCS = ("实验模式.md", "量表乱序规则.md", "便携发布-1.5.15.md", "�
 REQUIRED_FILES = ("main.py", "launcher.py", "launch.bat", "README.md", "平台使用手册.md",
                   "LICENSE", "VERSION", "requirements.txt", "requirements-lock.txt",
                   "LLM-Cultural-Tendencies.exe", "大语言模型潜在文化倾向性研究.exe", "runtime/python.exe",
-                  "app/webapp.py", "app/static/app.ico")
+                  "app/webapp.py", "app/static/app.ico", "data/README.md")
 EXCLUDED_DIRS = {"__pycache__", ".git", ".idea", "Scripts"}
 SKIP_SUFFIXES = {".pyc", ".pyo", ".bak", ".tmp"}
 STORED_SUFFIXES = {".zip", ".exe", ".dll", ".pyd", ".cat", ".ico", ".jpg", ".jpeg", ".png", ".gif"}

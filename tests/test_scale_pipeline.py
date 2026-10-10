@@ -36,6 +36,38 @@ PNG_1X1 = base64.b64decode(
 
 
 class ScalePipelineTests(unittest.TestCase):
+    def test_single_standard_language_sheet_is_not_reused_for_other_language(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for name, language in (("Sheet1", "en"), ("Sheet2", "ch")):
+                with self.subTest(sheet=name):
+                    path = Path(folder) / f"{name}.xlsx"
+                    workbook = Workbook()
+                    workbook.active.title = name
+                    for value in ("Fixture", "Answer the question.", "1. Question."):
+                        workbook.active.append([value])
+                    workbook.save(path)
+                    workbook.close()
+                    scale = load_scale_file(path)
+                    self.assertIsNotNone(getattr(scale, language))
+                    self.assertIsNone(getattr(scale, "ch" if language == "en" else "en"))
+
+    def test_nonstandard_sheet_fallback_does_not_duplicate_named_language(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for names, expected in ((("Sheet2", "English"), ("English", "Sheet2")),
+                                    (("First", "Second"), ("First", "Second"))):
+                with self.subTest(sheets=names):
+                    workbook = Workbook()
+                    workbook.active.title = names[0]
+                    workbook.create_sheet(names[1])
+                    for sheet in workbook:
+                        for value in (sheet.title, "Answer the question.", "1. Question."):
+                            sheet.append([value])
+                    path = Path(folder) / "fixture.xlsx"
+                    workbook.save(path)
+                    workbook.close()
+                    scale = load_scale_file(path)
+                    self.assertEqual((scale.en.title, scale.ch.title), expected)
+
     def test_loader_keeps_task_setting_as_context_and_extracts_image(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
