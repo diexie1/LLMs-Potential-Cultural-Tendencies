@@ -16,7 +16,7 @@ from .provenance import canonical_hash
 
 PARSER_VERSION = "strict-answer-json-v1"
 PROFILE_PARSER_VERSION = "strict-slot-json-v2"
-FREE_PARSER_VERSION = "free-text-v15"
+FREE_PARSER_VERSION = "free-text-v19"
 RESPONSE_STATUSES = (
     "ok",
     "partial",

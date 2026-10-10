@@ -36,7 +36,10 @@ _NUMBERS = dict(zip(("one", "two", "three", "four", "five", "six", "seven", "eig
 _NUMBERS.update(dict(zip("一二三四五六七八九", range(1, 10))))
 _NUMBERS["十"] = 10
 _OUTER = re.compile(r"^(?:情境|场景|故事|episode|situation|scenario|story|dilemma)\s*(?:第|#)?\s*(\d+|[一二三四五六七八九十]+|one|two|three|four|five|six|seven|eight|nine|ten)(?=\s|[:：.、]|$)", re.I)
-_ITEM = re.compile(r"^(?:(?:item|question|q)\s*|第\s*)?[（(]?(\d+)\s*(?:题|问)?(?:\.(?!\d)|[、)）:：])\s*(.*)$", re.I)
+_ITEM = re.compile(
+    r"^(?:(?:item|question|q)\s*|第\s*)?[（(]?(\d+)\s*(?:题|问)?"
+    r"(?:\.(?!\d)|[、)）:：]|(?=[①②③④⑤⑥⑦⑧⑨⑩]))\s*(.*)$", re.I
+)
 _SECTION = re.compile(r"^(III|II|I|A|B|C)\s*[.:：、]\s*(.*)$", re.I)
 _SCALAR = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?(?:\s*[%％分人]|\s*/\s*\d+)?(?:\s*(?:[=:(（—–,;。；-]|[.!?]\s*$|$))")
 _SUMMARY = re.compile(r"summary|summari[sz]|总结|汇总|整理|合成.*答案|最终(?:答案|分数|回答)|final\s+(?:answers?|scores?|list)|百分比列表", re.I)
@@ -307,7 +310,10 @@ def _records(text: str, slots: Sequence[ScaleSlot]) -> list[_Record]:
             current = _Record(row_number, row_context, row_section, [" | ".join(cells)], value, segment, final_summary)
             records.append(current)
             continue
-        marker = _ITEM.match(line)
+        # _plain applies NFKC, which turns circled digits such as ② into 2.
+        # Match the source line as a fallback so ``3 ②`` remains distinguishable
+        # from the ambiguous plain-number sequence ``3 2``.
+        marker = _ITEM.match(line) or _ITEM.match(_source_line(raw))
         if marker:
             original_marker = _ITEM.match(_source_line(raw))
             current = _Record(int(marker.group(1)), context, section,
@@ -652,6 +658,24 @@ def decode_free_response(text: str, slots: Sequence[ScaleSlot], *, allow_positio
     from .prompting import (ParsedAnswer, ParseResult, FREE_STATUS_READABLE,
                            _parse_free_answers_legacy, _is_open_text_slot, _free_text_response,
                            _free_positional_answers, FREE_PARSER_VERSION)
+    # Do not align a provider-degenerated stream by taking its first answers.
+    raw_text = str(text or "")
+    answer_slots = [slot for slot in slots if not _is_open_text_slot(slot)]
+    answer_atom = re.compile(r"(?:[+-]?\d+(?:\.\d+)?|[A-Za-z]{1,12}|[\u4e00-\u9fff])\Z")
+    bare_lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    overflow_limit = max(64, len(slots) * 2)
+    if (len(slots) > 1 and answer_slots and len(bare_lines) > overflow_limit
+            and all(answer_atom.fullmatch(line) for line in bare_lines)):
+        answer_like = sum(
+            any(_decode(slot, line).parse_status in FREE_STATUS_READABLE for slot in answer_slots)
+            for line in bare_lines
+        )
+        if answer_like / len(bare_lines) >= 0.95:
+            missing = [ParsedAnswer(slot_id=slot.slot_id, parse_status="missing") for slot in slots]
+            return ParseResult(
+                missing, "unparsed", recovery=FREE_PARSER_VERSION,
+                error="The response is an extreme unnumbered answer-only stream that greatly exceeds the item count; no values were assigned and raw_response was retained.",
+            )
     if len(slots) == 1 and _is_open_text_slot(slots[0]) and str(text or "").strip():
         answer = _free_text_response(slots[0], str(text).strip())
         answer.mapping_method = "single_open_item"
@@ -665,13 +689,21 @@ def decode_free_response(text: str, slots: Sequence[ScaleSlot], *, allow_positio
             return ParseResult(positional, "ok" if read == len(slots) else "partial" if read else "unparsed",
                                recovery=f"{FREE_PARSER_VERSION}-positional-v1")
         # Uniform bare sequence: every token is the same readable value. Order
-        # is irrelevant (all identical), so this is unambiguous even without
-        # item numbers; tolerate at most two duplicated tokens.
+        # is irrelevant (all identical), but the count must still match every
+        # item exactly; do not truncate or extend the returned sequence.
         uni_tokens = re.findall(r"[+-]?[0-9A-Za-z\u4e00-\u9fff]+", str(text))
         if uni_tokens:
             sample = uni_tokens[0]
             if (all(tok == sample for tok in uni_tokens)
-                    and len(slots) <= len(uni_tokens) <= len(slots) + 2
+                    and len(uni_tokens) > len(slots)
+                    and all(_decode(s, sample).parse_status in FREE_STATUS_READABLE for s in slots)):
+                missing = [ParsedAnswer(slot_id=s.slot_id, parse_status="missing") for s in slots]
+                return ParseResult(
+                    missing, "unparsed", recovery=FREE_PARSER_VERSION,
+                    error="The response contains an unlabelled uniform sequence with more values than items; no values were assigned and raw_response was retained.",
+                )
+            if (all(tok == sample for tok in uni_tokens)
+                    and len(uni_tokens) == len(slots)
                     and all(_decode(s, sample).parse_status in FREE_STATUS_READABLE for s in slots)):
                 uniform_answers = []
                 for s in slots:
@@ -703,8 +735,14 @@ def decode_free_response(text: str, slots: Sequence[ScaleSlot], *, allow_positio
             if usable and not has_item_numbers and all(assigned[t] for t, _ in task_pairs):
                 both = [ParsedAnswer(slot_id=s.slot_id, parse_status="missing") for s in slots]
                 recovered_tasks = 0
+                score_task_overflow = False
                 for task, idx in task_pairs:
                     seq = assigned[task]
+                    if task == "conclusion_believability" and len(seq) > len(idx):
+                        # Do not assign any scores when this task has more values
+                        # than items; the valid logical task remains independent.
+                        score_task_overflow = True
+                        continue
                     decoded_pairs = [(j, _decode(slots[j], tok)) for j, tok in zip(idx, seq)]
                     if (len(seq) == len(idx)
                             and all(dec.parse_status in FREE_STATUS_READABLE for _, dec in decoded_pairs)):
@@ -712,10 +750,15 @@ def decode_free_response(text: str, slots: Sequence[ScaleSlot], *, allow_positio
                             dec.mapping_method = "typed_task_blocks"
                             both[j] = dec
                         recovered_tasks += 1
-                if recovered_tasks:
+                if recovered_tasks or score_task_overflow:
                     read = sum(a.parse_status in FREE_STATUS_READABLE for a in both)
-                    if read == len(slots):
+                    if read == len(slots) and not score_task_overflow:
                         return ParseResult(both, "ok", recovery=FREE_PARSER_VERSION)
+                    if score_task_overflow:
+                        return ParseResult(
+                            both, "partial" if read else "unparsed", recovery=FREE_PARSER_VERSION,
+                            error="The conclusion-believability task had more values than items; all scores in that task were left unparsed. The other task was recovered only if complete; raw_response was retained.",
+                        )
                     return ParseResult(both, "partial", recovery=FREE_PARSER_VERSION,
                                        error="Only complete, unambiguous typed answer blocks were recovered; the other block was incomplete/mismatched and raw_response was retained.")
             for task in ("logical_validity", "conclusion_believability"):
@@ -834,8 +877,15 @@ def decode_free_response(text: str, slots: Sequence[ScaleSlot], *, allow_positio
             elif index == display and index not in original:
                 votes.add("display")
         labels = [record.number for record in group]
-        source_sequence = [next((n for n, ids in source_numbers.items() if ids == [i]), None) for i in eligible]
-        source_mode = votes == {"source"} or (not votes and labels == source_sequence and len(set(labels)) == len(labels) and labels != list(range(1, len(eligible) + 1)))
+        # The prompt keeps each Excel question's original number when shuffling.
+        # If response lines contain bare numbers and no question text establishes
+        # that the model renumbered by display position, use those source numbers
+        # directly. In particular, sequential labels such as 1..N must not be
+        # mistaken for display positions when they also identify unique source
+        # questions (e.g. the displayed order 1, 3, 2, 4).
+        source_mode = votes == {"source"} or (
+            not votes and not any(record.final_summary for record in group)
+        )
         positional_table = (len(group) == len(eligible) and all(r.number is None for r in group)
                             and (context is not None or not source_numbers)
                             and all(index is None or index == eligible[position] for position, index in enumerate(mapped))

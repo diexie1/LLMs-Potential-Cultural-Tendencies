@@ -34,6 +34,32 @@ def reasoning_slots():
 
 
 class ResponseDecoderReviewTests(unittest.TestCase):
+    def test_overlong_unlabelled_uniform_sequence_is_not_assigned(self):
+        slots = [rating("Question 1", "q1"), rating("Question 2", "q2")]
+        result = parse_free_answers("1\n1\n1", slots, allow_positional_fallback=True)
+        self.assertEqual(result.status, "unparsed")
+        self.assertTrue(all(answer.parse_status == "missing" for answer in result.answers))
+        self.assertTrue(all(answer.score is None for answer in result.answers))
+
+    def test_exact_unlabelled_uniform_sequence_can_be_assigned(self):
+        slots = [rating("Question 1", "q1"), rating("Question 2", "q2")]
+        result = parse_free_answers("1\n1", slots, allow_positional_fallback=True)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual([answer.score for answer in result.answers], [1, 1])
+
+    def test_short_unlabelled_answer_sequence_is_not_assigned_by_position(self):
+        slots = [rating(f"{index}. Question {index}", f"q{index}") for index in range(1, 4)]
+        for raw in ("5\n4", "5, 4"):
+            with self.subTest(raw=raw):
+                result = parse_free_answers(raw, slots, allow_positional_fallback=True)
+                self.assertEqual(result.status, "unparsed")
+                self.assertTrue(all(answer.score is None for answer in result.answers))
+                self.assertTrue(all(answer.parse_status == "missing" for answer in result.answers))
+
+        numbered = parse_free_answers("1. 5\n2. 4", slots, allow_positional_fallback=True)
+        self.assertEqual(numbered.status, "partial")
+        self.assertEqual([answer.score for answer in numbered.answers], [5, 4, None])
+
     def test_repeated_reasoning_options_are_not_a_selected_answer(self):
         slot = reasoning_slots()[0]
         for raw in ("YES / NO", "YES NO", "NO / YES", "VALID / INVALID", "YES or NO", "是 / 否"):
@@ -77,6 +103,81 @@ class ResponseDecoderReviewTests(unittest.TestCase):
             result = parse_free_answers('\n'.join(['-3'] * count), slots, allow_positional_fallback=True)
             self.assertTrue(all(a.score is None for a in result.answers))
 
+    def test_underfilled_unlabelled_reasoning_score_task_stays_missing(self):
+        slots = reasoning_slots()
+        logic = '\n'.join(['是', '否'] * 12)
+        scores = '\n'.join(['+3'] * 15)
+        result = parse_free_answers(logic + '\n\n' + scores, slots, allow_positional_fallback=True)
+        self.assertEqual(result.status, 'partial')
+        self.assertEqual(sum(a.parse_status == 'parsed' for a in result.answers[:24]), 24)
+        self.assertTrue(all(a.parse_status == 'missing' and a.score is None
+                            for a in result.answers[24:]))
+
+    def test_overlong_reasoning_score_task_is_not_parsed(self):
+        samples = [
+            {
+                "logic_order": [8, 15, 1, 18, 23, 24, 21, 19, 20, 22, 14, 12,
+                                6, 9, 16, 7, 3, 10, 11, 5, 2, 13, 4, 17],
+                "score_order": [30, 33, 36, 35, 25, 34, 39, 26, 38, 29, 31, 40,
+                                28, 32, 27, 37],
+                "logic": "是 否 是 是 否 是 否 是 否 是 否 否 是 是 否 是 否 是 是 否 是 否 是 否".split(),
+                "scores": [-3, 3, -3, -3, 3, 3, -3, 3, 3, -3, -3, -3, -3, 3, -3, 3, -3],
+            },
+            {
+                "logic_order": [3, 12, 10, 17, 1, 11, 14, 4, 7, 22, 9, 5,
+                                13, 8, 19, 18, 16, 6, 21, 24, 15, 23, 20, 2],
+                "score_order": [25, 26, 40, 31, 35, 32, 37, 30, 28, 34, 27, 36,
+                                39, 33, 29, 38],
+                "logic": "是 否 是 否 是 否 否 是 是 是 否 否 是 是 是 否 是 是 否 是 否 否 是 否".split(),
+                "scores": [-3, -3, -3, -3, -3, 3, -3, -3, -3, 3, -3, -3, -3, 3, -3, -3, 3],
+            },
+        ]
+        canonical = reasoning_slots()
+        for sample in samples:
+            with self.subTest(logic_order=sample["logic_order"][:3]):
+                order = ([number - 1 for number in sample["logic_order"]]
+                         + [24 + number - 25 for number in sample["score_order"]])
+                slots = [canonical[index] for index in order]
+                raw = "\n".join(sample["logic"]) + "\n\n" + "\n".join(
+                    f"{value:+d}" for value in sample["scores"])
+                result = parse_free_answers(raw, slots, allow_positional_fallback=True)
+                self.assertEqual(result.status, "partial")
+                self.assertEqual(sum(a.parse_status == "parsed" for a in result.answers), 24)
+                self.assertTrue(all(a.score is None for a in result.answers[24:]))
+                self.assertIn("all scores in that task were left unparsed", result.error)
+
+                remapped = remap_to_original(result.answers, order)
+                expected_logic = dict(zip(sample["logic_order"], sample["logic"]))
+                for question_number, answer in enumerate(remapped[:24], start=1):
+                    expected = "YES" if expected_logic[question_number] == "是" else "NO"
+                    self.assertEqual(answer.answer, expected)
+                self.assertTrue(all(answer.parse_status == "missing" and answer.score is None
+                                    for answer in remapped[24:]))
+
+    def test_mismatched_reasoning_tasks_without_readable_answers_are_unparsed(self):
+        from app.prompting import classify_model_response
+        slots = reasoning_slots()
+        for logic_count in (23, 25):
+            with self.subTest(logic_count=logic_count):
+                raw = "\n".join(["YES"] * logic_count + ["-3"] * 17)
+                result = parse_free_answers(raw, slots, allow_positional_fallback=True)
+                self.assertEqual(result.status, "unparsed")
+                self.assertEqual(classify_model_response(raw, result), "unparsed")
+                self.assertTrue(all(a.parse_status == "missing" and a.answer is None
+                                    and a.score is None for a in result.answers))
+
+    def test_extreme_bare_answer_overflow_is_left_entirely_unparsed(self):
+        slots = reasoning_slots()
+        raw = "\n".join(["是"] * 4083 + ["否"] * 13)
+
+        result = parse_free_answers(raw, slots, allow_positional_fallback=True)
+
+        self.assertEqual(result.status, "unparsed")
+        self.assertEqual(sum(a.parse_status == "parsed" for a in result.answers), 0)
+        self.assertTrue(all(a.parse_status == "missing" and a.answer is None
+                            and a.score is None for a in result.answers))
+        self.assertIn("extreme unnumbered answer-only stream", result.error)
+
     def test_scored_logic_number_list_cannot_become_belief_scores(self):
         slots = reasoning_slots()
         raw = '\n'.join(f'{n}. +3' for n in range(1, 25))
@@ -90,11 +191,15 @@ class ResponseDecoderReviewTests(unittest.TestCase):
         self.assertTrue(all(a.parse_status == 'missing' for a in result.answers[24:]))
         self.assertTrue(all(a.score is None for a in result.answers))
 
-    def test_typed_reasoning_tasks_do_not_override_ambiguous_numbering(self):
+    def test_typed_reasoning_task_numbers_follow_original_question_numbers(self):
         slots = reasoning_slots()[::-1]
         raw = '\n'.join(f'{n}. {"YES" if n % 2 else "NO"}' for n in range(1, 25)) + '\n\n' + '\n'.join(f'{n}. {n % 7 - 3:+d}' for n in range(1, 17))
         result = parse_free_answers(raw, slots, allow_positional_fallback=True)
-        self.assertNotEqual(result.status, 'ok')
+        self.assertEqual(result.status, 'ok')
+        self.assertEqual([a.score for a in result.answers[:16]],
+                         [n % 7 - 3 for n in range(16, 0, -1)])
+        self.assertEqual([a.answer for a in result.answers[16:]],
+                         ['NO' if n % 2 == 0 else 'YES' for n in range(24, 0, -1)])
 
     def test_source_option_text_is_decoded_without_inventing_scores(self):
         slot = rating('1. How often?\n① Many times a day ② Once a day ③ Never')
@@ -207,8 +312,8 @@ class ResponseDecoderReviewTests(unittest.TestCase):
         slots = [rating("2. Beta question", "q2"), rating("1. Alpha question", "q1")]
         result = parse_free_answers("1. 5\n2. 5", slots)
         self.assertEqual([a.score for a in result.answers], [5, 5])
-        self.assertTrue(all(a.mapping_method == "numbering_invariant_value" for a in result.answers))
-        self.assertTrue(all(a.score is None for a in parse_free_answers("1. 5\n2. 6", slots).answers))
+        self.assertTrue(all(a.mapping_method == "source_number" for a in result.answers))
+        self.assertEqual([a.score for a in parse_free_answers("1. 5\n2. 6", slots).answers], [6, 5])
 
     def test_attribution_compact_and_multiline_sections(self):
         slots = [rating("First statement", "attribution_s01_a01", context_id="attribution_s01", section_id="attribution_agreement"),
@@ -480,14 +585,14 @@ class ResponseDecoderReviewTests(unittest.TestCase):
         result = parse_free_answers(raw, slots)
         self.assertEqual([a.answer for a in result.answers], ["YES", "NO"])
 
-    def test_truth_task_numbering_does_not_fill_ambiguous_logic_rows(self):
+    def test_truth_task_numbers_follow_original_question_numbers(self):
         slots = [ScaleSlot(slot_id="reasoning_concrete_02", question="2.\nConclusion: All rabbits sleep", response_type="choice", choices=["YES", "NO"], section_id="logical_validity"),
                  ScaleSlot(slot_id="reasoning_concrete_01", question="1.\nConclusion: All birds sing", response_type="choice", choices=["YES", "NO"], section_id="logical_validity"),
                  ScaleSlot(slot_id="reasoning_belief_02", question="2. All rabbits sleep", response_type="integer", minimum=-3, maximum=3, section_id="conclusion_believability", linked_slot_id="reasoning_concrete_02"),
                  ScaleSlot(slot_id="reasoning_belief_01", question="1. All birds sing", response_type="integer", minimum=-3, maximum=3, section_id="conclusion_believability", linked_slot_id="reasoning_concrete_01")]
         raw = "Logical validity first:\n1. YES\n2. NO\nTruth scores:\n1. All birds sing: 2\n2. All rabbits sleep: -2"
         result = parse_free_answers(raw, slots)
-        self.assertTrue(all(a.parse_status == "missing" for a in result.answers[:2]))
+        self.assertEqual([a.answer for a in result.answers[:2]], ["NO", "YES"])
 
     def test_ios_pair_label_and_rationale_are_decoded(self):
         raw = ("1. Colleagues: Pair (2). Two circles interact and have separate lives.\n"
@@ -551,10 +656,69 @@ class ResponseDecoderReviewTests(unittest.TestCase):
         result = parse_free_answers("1. Beta question: 6\n2. Alpha question: 3", slots)
         self.assertEqual([a.score for a in result.answers], [6, 3])
 
-    def test_bare_numbers_after_shuffle_are_not_guessed(self):
+    def test_bare_numbers_after_shuffle_follow_original_question_numbers(self):
         slots = [rating("2. Beta question", "q2"), rating("1. Alpha question", "q1")]
         result = parse_free_answers("1. 6\n2. 3", slots)
-        self.assertTrue(all(a.score is None for a in result.answers))
+        self.assertEqual([a.score for a in result.answers], [3, 6])
+        self.assertTrue(all(a.mapping_method == "source_number" for a in result.answers))
+
+    def test_bare_numbered_probability_answers_use_preserved_excel_labels(self):
+        slots = [
+            ScaleSlot(slot_id="item_001", question="1. First question", response_type="number", minimum=0, maximum=100),
+            ScaleSlot(slot_id="item_003", question="3. Third question", response_type="number", minimum=0, maximum=100),
+            ScaleSlot(slot_id="item_002", question="2. Second question", response_type="number", minimum=0, maximum=100),
+            ScaleSlot(slot_id="item_004", question="4. Fourth question", response_type="number", minimum=0, maximum=100),
+        ]
+        result = parse_free_answers("1. 40%\n2. 60%\n3. 5%\n4. 45%", slots)
+        self.assertEqual([a.score for a in result.answers], [40, 5, 60, 45])
+        original_order = remap_to_original(result.answers, [0, 2, 1, 3])
+        self.assertEqual([a.score for a in original_order], [40, 60, 5, 45])
+        self.assertEqual(result.answers[2].mapping_method, "source_number")
+        self.assertEqual(result.answers[1].mapping_method, "source_number")
+
+    def test_shuffled_crsi_circled_choices_after_bare_source_numbers(self):
+        canonical = [
+            ScaleSlot(slot_id=f"item_{n:03d}", question=f"{n}. Question {n}",
+                      response_type="integer", minimum=1,
+                      maximum=8 if n in {9, 10, 11} else 5)
+            for n in range(1, 21)
+        ]
+        order = [10, 2, 14, 9, 0, 15, 8, 7, 17, 4, 11, 3, 1, 16, 6, 12, 13, 18, 19, 5]
+        slots = [canonical[index] for index in order]
+        raw = ("3 ②\n15 ③\n10 ⑥\n1 ③\n16 ③\n9 ⑥\n8 ③\n18 ②\n5 ③\n"
+               "12 ③\n4 ③\n2 ③\n17 ②\n7 ③\n13 ②\n14 ②\n19 ②\n20 ③\n6 ③")
+        parsed = parse_free_answers(raw, slots, allow_positional_fallback=True)
+        answers = remap_to_original(parsed.answers, order)
+        expected = {1: 3, 2: 3, 3: 2, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3,
+                    9: 6, 10: 6, 12: 3, 13: 2, 14: 2, 15: 3, 16: 3,
+                    17: 2, 18: 2, 19: 2, 20: 3}
+        self.assertEqual(parsed.status, "partial")
+        for number, score in expected.items():
+            with self.subTest(number=number):
+                answer = answers[number - 1]
+                self.assertEqual(answer.parse_status, "parsed")
+                self.assertEqual(answer.score, score)
+                self.assertEqual(answer.answer, f"{'①②③④⑤⑥⑦⑧⑨⑩'[score - 1]}")
+                self.assertEqual(answer.mapping_method, "source_number")
+        self.assertEqual(answers[10].parse_status, "missing")
+        self.assertIsNone(answers[10].answer)
+        self.assertIsNone(answers[10].score)
+        ambiguous = parse_free_answers("3 2", slots, allow_positional_fallback=True)
+        self.assertTrue(all(answer.parse_status == "missing" for answer in ambiguous.answers))
+
+    def test_four_item_shuffle_uses_original_numbers_not_display_positions(self):
+        slots = [
+            ScaleSlot(slot_id="q1", question="1. First question", response_type="number", minimum=0, maximum=100),
+            ScaleSlot(slot_id="q3", question="3. Third question", response_type="number", minimum=0, maximum=100),
+            ScaleSlot(slot_id="q2", question="2. Second question", response_type="number", minimum=0, maximum=100),
+            ScaleSlot(slot_id="q4", question="4. Fourth question", response_type="number", minimum=0, maximum=100),
+        ]
+        result = parse_free_answers("1. 40%\n2. 60%\n3. 5%\n4. 45%", slots)
+        self.assertEqual([a.score for a in result.answers], [40, 5, 60, 45])
+        self.assertEqual([a.score for a in remap_to_original(result.answers, [0, 2, 1, 3])],
+                         [40, 60, 5, 45])
+        self.assertEqual(result.answers[2].mapping_method, "source_number")
+        self.assertEqual(result.answers[1].mapping_method, "source_number")
 
     def test_aligned_source_and_display_numbers_are_unambiguous(self):
         slots = [rating("1. Alpha question"), rating("2. Beta question", "q2")]
