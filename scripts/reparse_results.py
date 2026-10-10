@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.prompting import (FREE_PARSER_VERSION, FREE_STATUS_READABLE, parse_free_answers,
                           parse_kohlberg_free_answers, classify_model_response, remap_to_original)
-from app.scale_loader import ScaleSlot
+from app.scale_loader import ScaleSlot, attach_source_answer_labels
 from app.runner import BatchRunner
 from app.trial_results import export_trials
 
@@ -26,6 +26,11 @@ def reparse_result(value: dict) -> dict:
     items = result["items"]
     fields = ScaleSlot.__dataclass_fields__
     canonical = [ScaleSlot(**{key: item[key] for key in fields if key in item}) for item in items]
+    attach_source_answer_labels(canonical, result.get("instruction", ""))
+    by_slot = {slot.slot_id: slot for slot in canonical}
+    for block in result.get("blocks", []):
+        if block.get("instruction"):
+            attach_source_answer_labels([by_slot[item["slot_id"]] for item in block["slots"]], block["instruction"])
     order = [int(index) - 1 for index in result.get("shuffle_order", range(1, len(items) + 1))]
     if sorted(order) != list(range(len(items))):
         raise ValueError("Saved shuffle order is not a complete permutation")
@@ -61,6 +66,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--skip-excel", action="store_true", help="Write trial JSON/CSV and audit summaries without the full-response workbook")
     args = parser.parse_args()
     source, output = args.source.resolve(), args.output.resolve()
     if not source.is_dir():
@@ -77,6 +83,7 @@ def main():
     totals = Counter()
     groups = defaultdict(Counter)
     item_statuses = Counter()
+    item_changes = []
     for path in files:
         saved_bytes = path.read_bytes()
         old = json.loads(saved_bytes.decode("utf-8"))
@@ -109,6 +116,17 @@ def main():
             groups[(old["scale_name"], old["language"])][prefix + "_" + str(data.get("response_status"))] += 1
         totals["answer_assignment_changes"] += sum(
             before.get("score") != after.get("score") for before, after in zip(old["items"], result["items"]))
+        for before, after in zip(old["items"], result["items"]):
+            if before.get("score") is None and after.get("score") is not None:
+                totals["scores_recovered"] += 1
+            if before.get("score") is not None and before["score"] != after.get("score"):
+                totals["existing_scores_changed_or_removed"] += 1
+            fields = ("score", "parse_status", "range_lower", "range_upper", "range_unit")
+            if any(before.get(key) != after.get(key) for key in fields):
+                item_changes.append({"source": path.relative_to(source).as_posix(), "slot_id": after["slot_id"],
+                                     "before_score": before.get("score"), "after_score": after.get("score"),
+                                     "before_status": before.get("parse_status"), "after_status": after.get("parse_status"),
+                                     "mapping_method": after.get("mapping_method"), "answer": after.get("answer")})
         totals["before_read_items"] += old.get("read_item_count", 0)
         totals["after_read_items"] += result["read_item_count"]
         totals["items"] += len(result["items"])
@@ -121,6 +139,12 @@ def main():
             writer = csv.DictWriter(handle, fieldnames=list(audit[0]))
             writer.writeheader()
             writer.writerows(rows)
+    if item_changes:
+        with (output / "逐题解析变更.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(item_changes[0]))
+            writer.writeheader()
+            writer.writerows(item_changes)
+    totals.setdefault("existing_scores_changed_or_removed", 0)
     summary = {"parser_version": FREE_PARSER_VERSION, "totals": dict(totals),
                "item_statuses": dict(item_statuses),
                "groups": [{"scale": scale, "language": language, **counts} for (scale, language), counts in sorted(groups.items())]}
@@ -131,8 +155,9 @@ def main():
     for path in files:
         parts = path.relative_to(source).parts
         folders.add(output / parts[0] if len(parts) > 1 and parts[0].startswith("run_") else output)
-    for folder in sorted(folders):
-        export_trials(folder)
+    if not args.skip_excel:
+        for folder in sorted(folders):
+            export_trials(folder)
     print(json.dumps(totals, ensure_ascii=True))
 
 

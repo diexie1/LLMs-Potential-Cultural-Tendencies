@@ -6,6 +6,7 @@ import base64
 import hashlib
 import posixpath
 import re
+import unicodedata
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,6 +104,54 @@ class ScaleTaskBlock:
     # the user explicitly enables shuffling for the scale.
     shuffle_policy: str = "fixed"
     metadata: Dict[str, object] = field(default_factory=dict)
+
+
+def attach_source_answer_labels(slots: List[ScaleSlot], instruction: str) -> None:
+    """Keep explicit source option text as decoder aliases, without guessing labels."""
+    marker = re.compile(r"(?<![\w.])([+-]?\d+|[ABX])\s*=\s*|[①②③④⑤⑥⑦⑧⑨⑩]\s*|(?m:^[ \t]*[AB]\s*[.、]\s*)")
+    for slot in slots:
+        if slot.response_type not in {"integer", "number", "choice"}:
+            continue
+        aliases: Dict[str, str] = {}
+        conflicts = set()
+        for source in (instruction, slot.question):
+            matches = list(marker.finditer(source))
+            if source == instruction:
+                codes = {unicodedata.normalize("NFKC", m.group(1) or m.group().strip().rstrip(".、").strip()) for m in matches}
+                if slot.choices:
+                    if codes != set(slot.choices):
+                        continue
+                else:
+                    numeric_codes = [float(c) for c in codes if re.fullmatch(r"[+-]?\d+", c)]
+                    if not numeric_codes or min(numeric_codes) != slot.minimum or max(numeric_codes) != slot.maximum:
+                        continue
+            for index, match in enumerate(matches):
+                raw_code = match.group(1) or match.group().strip().rstrip(".、").strip()
+                code = unicodedata.normalize("NFKC", raw_code)
+                if slot.choices:
+                    if code not in slot.choices:
+                        continue
+                else:
+                    lower = float(slot.minimum) if slot.minimum is not None else float('-inf')
+                    upper = float(slot.maximum) if slot.maximum is not None else float('inf')
+                    if not re.fullmatch(r"[+-]?\d+", code) or not lower <= float(code) <= upper:
+                        continue
+                label = source[match.end():matches[index + 1].start() if index + 1 < len(matches) else len(source)]
+                # Source definitions end at a newline or a sentence, never at
+                # an arbitrary number in surrounding prose.
+                label = label.splitlines()[0].strip(" \t,，;；.。") if label.splitlines() else ""
+                if not label or len(label) > 100:
+                    continue
+                for alias in [label, *re.split(r"[/／]", label)]:
+                    key = unicodedata.normalize("NFKC", alias).strip().casefold()
+                    if key in aliases and aliases[key] != code:
+                        conflicts.add(key)
+                    aliases[key] = code
+        for key in conflicts:
+            aliases.pop(key, None)
+        slot.metadata.pop("answer_labels", None)
+        if aliases:
+            slot.metadata["answer_labels"] = aliases
 
 
 @dataclass
@@ -430,6 +479,8 @@ def _parse_sheet(
                 shuffle_supported=False,
             )
 
+        for block in layout.blocks:
+            attach_source_answer_labels(block.slots, block.instruction or layout.instruction)
         return ScaleSheet(
             language=language,
             title=title,

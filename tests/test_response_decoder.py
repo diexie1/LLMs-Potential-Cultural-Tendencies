@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.prompting import parse_free_answers, parse_kohlberg_free_answers
-from app.scale_loader import ScaleSlot
+from app.prompting import parse_free_answers, parse_kohlberg_free_answers, remap_to_original
+from app.scale_loader import ScaleSlot, attach_source_answer_labels
 from scripts.reparse_results import reparse_result
 
 
@@ -24,7 +24,309 @@ def ios_slots():
             for index, relation in enumerate(("colleague", "family", "relative", "friend"), 1)]
 
 
+def reasoning_slots():
+    return [ScaleSlot(slot_id=f'reasoning_logic_{n:02d}', question=f'{n}.\nConclusion: Statement {n}',
+                      response_type='choice', choices=['YES', 'NO'], section_id='logical_validity',
+                      metadata={'argument_no': n}) for n in range(1, 25)] + [
+        ScaleSlot(slot_id=f'reasoning_belief_{n:02d}', question=f'{n}. Statement {n}',
+                  response_type='integer', minimum=-3, maximum=3, section_id='conclusion_believability',
+                  linked_slot_id=f'reasoning_logic_{n:02d}') for n in range(1, 17)]
+
+
 class ResponseDecoderReviewTests(unittest.TestCase):
+    def test_repeated_reasoning_options_are_not_a_selected_answer(self):
+        slot = reasoning_slots()[0]
+        for raw in ("YES / NO", "YES NO", "NO / YES", "VALID / INVALID", "YES or NO", "是 / 否"):
+            with self.subTest(raw=raw):
+                answer = parse_free_answers(raw, [slot], allow_positional_fallback=True).answers[0]
+                self.assertNotEqual(answer.parse_status, "parsed")
+        for raw in ("YES", "NO"):
+            self.assertEqual(parse_free_answers(raw, [slot], allow_positional_fallback=True).answers[0].answer, raw)
+
+    def test_reasoning_user_example_reads_both_tasks_by_saved_source_order(self):
+        raw = ('24. 是\n9. 是\n1. 是\n5. 否\n8. 是\n21. 否\n4. 否\n14. 是\n20. 否\n10. 是\n16. 否\n15. 否\n22. 是\n7. 是\n17. 否\n19. 是\n12. 否\n6. 否\n23. 否\n18. 是\n3. 否\n2. 是\n11. 否\n13. 是\n\n'
+               '6. -2\n3. -2\n12. -3\n15. -2\n10. +3\n4. -3\n11. -3\n16. -3\n8. +3\n2. +3\n14. +2\n9. +3\n7. +3\n5. -3\n13. +2\n1. +3')
+        logic, scores = raw.split('\n\n')
+        expected_logic = {int(line.split('.')[0]): 'YES' if line.endswith('是') else 'NO' for line in logic.splitlines()}
+        expected_scores = {int(line.split('.')[0]): int(line.split()[1]) for line in scores.splitlines()}
+        order = [int(line.split('.')[0]) - 1 for line in logic.splitlines()] + [24 + int(line.split('.')[0]) - 1 for line in scores.splitlines()]
+        canonical = reasoning_slots()
+        slots = [canonical[i] for i in order]
+        for text in (raw, raw.replace('是', 'YES').replace('否', 'NO').replace('\n\n', '\n\nScores:\n')):
+            with self.subTest(text=text[:20]):
+                result = parse_free_answers(text, slots, allow_positional_fallback=True)
+                self.assertEqual(result.status, 'ok')
+                answers = remap_to_original(result.answers, order)
+                self.assertEqual([a.answer for a in answers[:24]], [expected_logic[n] for n in range(1, 25)])
+                self.assertTrue(all(a.score is None for a in answers[:24]))
+                self.assertEqual([a.score for a in answers[24:]], [expected_scores[n] for n in range(1, 17)])
+                self.assertEqual(answers[24].answer, '+3')
+                self.assertEqual(answers[24 + 5].answer, '-2')
+
+    def test_complete_unlabelled_reasoning_score_task_preserves_logic_missing(self):
+        canonical = reasoning_slots()
+        slots = canonical[:24][::-1] + canonical[24:][::-1]
+        values = [-3, 3, 0, -2, 2, -1, 1, 3, -3, 0, 2, -2, 1, -1, 3, -3]
+        for raw in ('\n'.join(f'{v:+d}' for v in values), ', '.join(f'{v:+d}' for v in values)):
+            result = parse_free_answers(raw, slots, allow_positional_fallback=True)
+            self.assertEqual(result.status, 'partial')
+            self.assertTrue(all(a.parse_status == 'missing' for a in result.answers[:24]))
+            self.assertEqual([a.score for a in result.answers[24:]], values)
+            self.assertTrue(all(a.mapping_method == 'complete_typed_task_order' for a in result.answers[24:]))
+        for count in (15, 17, 20, 24, 25):
+            result = parse_free_answers('\n'.join(['-3'] * count), slots, allow_positional_fallback=True)
+            self.assertTrue(all(a.score is None for a in result.answers))
+
+    def test_scored_logic_number_list_cannot_become_belief_scores(self):
+        slots = reasoning_slots()
+        raw = '\n'.join(f'{n}. +3' for n in range(1, 25))
+        result = parse_free_answers(raw, slots, allow_positional_fallback=True)
+        self.assertTrue(all(a.score is None for a in result.answers))
+
+    def test_complete_unlabelled_logic_task_preserves_scores_missing(self):
+        slots = reasoning_slots()
+        result = parse_free_answers('\n'.join(['是', '否'] * 12), slots, allow_positional_fallback=True)
+        self.assertEqual([a.answer for a in result.answers[:24]], ['YES', 'NO'] * 12)
+        self.assertTrue(all(a.parse_status == 'missing' for a in result.answers[24:]))
+        self.assertTrue(all(a.score is None for a in result.answers))
+
+    def test_typed_reasoning_tasks_do_not_override_ambiguous_numbering(self):
+        slots = reasoning_slots()[::-1]
+        raw = '\n'.join(f'{n}. {"YES" if n % 2 else "NO"}' for n in range(1, 25)) + '\n\n' + '\n'.join(f'{n}. {n % 7 - 3:+d}' for n in range(1, 17))
+        result = parse_free_answers(raw, slots, allow_positional_fallback=True)
+        self.assertNotEqual(result.status, 'ok')
+
+    def test_source_option_text_is_decoded_without_inventing_scores(self):
+        slot = rating('1. How often?\n① Many times a day ② Once a day ③ Never')
+        attach_source_answer_labels([slot], '')
+        for raw in ('1. Once a day', '1. I choose Once a day', '{"answers":[{"display_index":1,"answer":"Once a day"}]}'):
+            self.assertEqual(parse_free_answers(raw, [slot]).answers[0].score, 2)
+        self.assertIsNone(parse_free_answers('1. Perhaps once a day, or never.', [slot]).answers[0].score)
+
+    def test_global_rating_labels_cannot_supply_probability_answers(self):
+        slot = ScaleSlot(slot_id='p', question='1. How likely?', response_type='number', minimum=0, maximum=100)
+        attach_source_answer_labels([slot], '1=Disagree, 2=Neutral, 3=Agree.')
+        self.assertNotIn('answer_labels', slot.metadata)
+
+    def test_task_instruction_replaces_other_tasks_option_labels(self):
+        slot = rating('1. Group perception?')
+        attach_source_answer_labels([slot], '1=Disagree, 7=Agree.')
+        attach_source_answer_labels([slot], '1=Not a group, 7=Very much a group.')
+        self.assertEqual(parse_free_answers('1. Very much a group', [slot]).answers[0].score, 7)
+        self.assertIsNone(parse_free_answers('1. Agree', [slot]).answers[0].score)
+
+    def test_choice_scientific_notation_is_not_first_digit(self):
+        slot = ScaleSlot(slot_id='q', question='1. Pick one', response_type='choice', choices=['1', '2', '3'])
+        raw = '{"answers":[{"display_index":1,"answer":"1e2"}]}'
+        self.assertIsNone(parse_free_answers(raw, [slot]).answers[0].score)
+        self.assertIsNone(parse_free_answers('1. I choose 2.5', [slot]).answers[0].score)
+
+    def test_adjacent_question_dash_does_not_flip_negative_sign(self):
+        slot = ScaleSlot(slot_id='q', question='1. Alpha question', response_type='integer', minimum=-3, maximum=7)
+        for raw in ('1. Alpha question –3', '1. Alpha question —3'):
+            self.assertIsNone(parse_free_answers(raw, [slot]).answers[0].score)
+        self.assertEqual(parse_free_answers('1. Alpha question −3', [slot]).answers[0].score, -3)
+
+    def test_integer_validation_is_shared_by_json_and_positional_paths(self):
+        for raw in ('3.5', '1. score: 3.5', '{"answers":[{"display_index":1,"answer":3.5}]}'):
+            with self.subTest(raw=raw):
+                answer = parse_free_answers(raw, [rating('1. Alpha statement.')], allow_positional_fallback=True).answers[0]
+                self.assertIsNone(answer.score)
+                self.assertNotEqual(answer.parse_status, 'parsed')
+
+    def test_scientific_notation_never_becomes_its_first_digit(self):
+        for raw in ('1. score: 1e2', '1. I give 1e2', '{"answers":[{"display_index":1,"answer":"1e2"}]}'):
+            with self.subTest(raw=raw):
+                answer = parse_free_answers(raw, [rating('1. Alpha statement.')]).answers[0]
+                self.assertEqual(answer.score, 100)
+                self.assertEqual(answer.parse_status, 'out_of_range')
+        for raw in ('1. score: 1e999', '1. score: 1e', '1. score: 1e-'):
+            self.assertIsNone(parse_free_answers(raw, [rating('1. Alpha statement.')]).answers[0].score)
+
+    def test_json_multiple_values_do_not_supply_one_score(self):
+        raw = '{"answers":[{"display_index":1,"answer":"3, 4"}]}'
+        self.assertIsNone(parse_free_answers(raw, [rating('1. Alpha statement.')]).answers[0].score)
+
+    def test_unknown_number_does_not_fill_only_item(self):
+        self.assertIsNone(parse_free_answers('99. 5', [rating('1. Alpha statement.')]).answers[0].score)
+
+    def test_unknown_context_cannot_be_overridden_by_unnumbered_question(self):
+        slot = rating('Alpha statement.', 'attribution_s01_a01', context_id='attribution_s01', section_id='attribution_agreement')
+        self.assertIsNone(parse_free_answers('Scenario 99\nAlpha statement: 5', [slot]).answers[0].score)
+
+    def test_exact_groupness_question_starts_next_task_after_scenario(self):
+        slots = [rating('Alpha statement.', 'attribution_s01_a01', context_id='attribution_s01', section_id='attribution_agreement'),
+                 rating('How far is a hospital a group?', 'attribution_groupness_g01', context_id='attribution_groupness')]
+        result = parse_free_answers('Scenario 1\nA. 5\nHow far is a hospital a group? 6', slots)
+        self.assertEqual([a.score for a in result.answers], [5, 6])
+        result = parse_free_answers('Scenario 99\nHow far is a hospital a group? 6', slots)
+        self.assertIsNone(result.answers[1].score)
+
+    def test_negated_logical_validity_is_no(self):
+        slot = ScaleSlot(slot_id='reasoning_1', question='1. Conclusion?', response_type='choice', choices=['YES', 'NO'], section_id='logical_validity')
+        for raw in ('1. The conclusion is not logically valid.', '1. 并非逻辑有效。', '1. 逻辑上不有效。'):
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_free_answers(raw, [slot]).answers[0].answer, 'NO')
+        for raw in ('1. It is not logically invalid.', '1. If logically valid, choose YES.', '1. 并非逻辑无效。'):
+            self.assertNotEqual(parse_free_answers(raw, [slot]).answers[0].parse_status, 'parsed')
+
+    def test_negated_choices_are_not_selected(self):
+        slot = ScaleSlot(slot_id='q', question='1. Decision?', response_type='choice', choices=['A', 'B'])
+        for raw in ("1. I don't choose B. I choose A", '1. I do not select B; I select A', '1. 不选B。我选A'):
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_free_answers(raw, [slot]).answers[0].answer, 'A')
+        for raw in ('1. I choose A. I choose B.', '1. unselected B'):
+            self.assertNotEqual(parse_free_answers(raw, [slot]).answers[0].parse_status, 'parsed')
+
+    def test_ios_negated_diagram_is_not_selected(self):
+        for raw in ('1. Not pair 4; I choose pair 5.', '1. 不是图4，选择图5。'):
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_free_answers(raw, ios_slots()).answers[0].score, 5)
+        self.assertIsNone(parse_free_answers('1. Pair 4. Pair 5.', ios_slots()).answers[0].score)
+
+    def test_exact_question_ascii_dash_preserves_signed_answer(self):
+        slot = ScaleSlot(slot_id="q", question="2. Alpha statement.", response_type="integer", minimum=-3, maximum=7)
+        for raw, score in (("2. Alpha statement. - 5", 5), ("2. Alpha statement. - -2", -2),
+                           ("2. Alpha statement. -2", -2)):
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_free_answers(raw, [slot]).answers[0].score, score)
+        decimal = ScaleSlot(slot_id="q", question="Alpha statement.", response_type="number", minimum=0, maximum=1)
+        for raw in ("1. Alpha statement .5", "1. Alpha statement. .5"):
+            self.assertEqual(parse_free_answers(raw, [decimal]).answers[0].score, .5)
+
+    def test_ios_parenthesized_complete_list_follows_saved_display_order(self):
+        slots = ios_slots()[::-1]
+        result = parse_free_answers("(3)\n(4)\n(5)\n(3)", slots, allow_positional_fallback=True)
+        self.assertEqual([a.score for a in result.answers], [3, 4, 5, 3])
+        self.assertEqual(result.answers[0].slot_id, "ios_friend")
+        self.assertEqual(result.answers[0].mapping_method, "complete_response_order")
+        for raw in ("(3)\n(4)\n(5)", "(3)\n(4)\n(5)\n(8)"):
+            self.assertNotEqual(parse_free_answers(raw, slots, allow_positional_fallback=True).status, "ok")
+
+    def test_same_scores_are_invariant_to_ambiguous_number_mode(self):
+        slots = [rating("2. Beta question", "q2"), rating("1. Alpha question", "q1")]
+        result = parse_free_answers("1. 5\n2. 5", slots)
+        self.assertEqual([a.score for a in result.answers], [5, 5])
+        self.assertTrue(all(a.mapping_method == "numbering_invariant_value" for a in result.answers))
+        self.assertTrue(all(a.score is None for a in parse_free_answers("1. 5\n2. 6", slots).answers))
+
+    def test_attribution_compact_and_multiline_sections(self):
+        slots = [rating("First statement", "attribution_s01_a01", context_id="attribution_s01", section_id="attribution_agreement"),
+                 rating("Second statement", "attribution_s01_a02", context_id="attribution_s01", section_id="attribution_agreement"),
+                 ScaleSlot(slot_id="attribution_s01_b", question="Other actor?", response_type="number", minimum=0, maximum=100, context_id="attribution_s01", section_id="other_actor_probability"),
+                 ScaleSlot(slot_id="attribution_s01_c", question="Same actor?", response_type="number", minimum=0, maximum=100, context_id="attribution_s01", section_id="same_actor_probability"),
+                 rating("Group one", "attribution_groupness_01", context_id="attribution_groupness"),
+                 rating("Group two", "attribution_groupness_02", context_id="attribution_groupness")]
+        for raw in ("情境一：A. 7, 5；B. 45%；C. 75%\n群体性：6, 4",
+                    "Situation One\nA.\n7\n5\nB.\n45%\nC.\n75%\n\n6\n4"):
+            result = parse_free_answers(raw, slots)
+            self.assertEqual([a.score for a in result.answers], [7, 5, 45, 75, 6, 4])
+        # A surplus value cannot shift the A items or be truncated to fit.
+        result = parse_free_answers("情境一：A. 7, 5, 3；B. 45%；C. 75%", slots)
+        self.assertEqual([a.score for a in result.answers[:2]], [None, None])
+        self.assertEqual([a.score for a in result.answers[2:4]], [45, 75])
+
+    def test_complete_interview_question_skeleton_and_continuation(self):
+        slots = [ScaleSlot(slot_id="a", question="Story\n1. First?\n1a. Why?\n2. Second?", response_type="text", metadata={"open_ended": True}),
+                 ScaleSlot(slot_id="b", question="Continuation\n3. Third?\n4. Fourth?", response_type="text", metadata={"open_ended": True}),
+                 ScaleSlot(slot_id="c", question="New story\n1. First?\n2. Second?", response_type="text", metadata={"open_ended": True})]
+        raw = "1. Yes.\n1a. Because life matters.\n2. No.\n3. Leniency.\n4. Responsibility.\n1. Honesty.\n2. Trust."
+        result = parse_kohlberg_free_answers(raw, slots)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.answers[1].answer, "3. Leniency.\n4. Responsibility.")
+        self.assertTrue(all(a.score is None for a in result.answers))
+        for bad in (raw.replace("4. Responsibility.\n", ""), raw + "\n3. Extra answer."):
+            self.assertNotEqual(parse_kohlberg_free_answers(bad, slots).status, "ok")
+        partial = parse_kohlberg_free_answers(raw.split("1. Honesty.")[0], slots)
+        self.assertEqual(partial.status, "partial")
+        self.assertEqual(partial.answers[2].parse_status, "missing")
+
+    def test_interview_continuation_with_only_one_main_question(self):
+        slots = [ScaleSlot(slot_id="a", question="1. First?\n2. Second?", response_type="text", metadata={"open_ended": True}),
+                 ScaleSlot(slot_id="b", question="1. Follow-up?\n1a. Why?", response_type="text", metadata={"open_ended": True}),
+                 ScaleSlot(slot_id="c", question="2. Trial?\n3. Punishment?", response_type="text", metadata={"open_ended": True})]
+        result = parse_kohlberg_free_answers("1. Yes.\n2. No.\n1. Report it.\n1a. Responsibility.\n2. Leniency.\n3. Proportionate.", slots)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.answers[1].answer, "1. Report it.\n1a. Responsibility.")
+
+    def test_human_rights_scoped_roman_sections_hold_two_answers(self):
+        slots = [rating(f"Statement {i}", f"human_rights_e01_{section}_{i}",
+                        context_id="human_rights_e01", section_id=section)
+                 for section in ("viewpoint", "outcome", "action") for i in (1, 2)]
+        for raw in ("情境1：I. 5，4；II. 3，2；III. 1，5",
+                    "Episode One\nI.\n5\n4\nII. 3 2\nIII. 1 5",
+                    "<情境1> I. 5 4 II. 3 2 III. 1 5",
+                    "<Episode 1> Family meeting\nI. A=5, B=4\nII. A=3, B=2\nIII. A=1, B=5",
+                    "<Episode 1> 5, 4, 3, 2, 1, 5"):
+            self.assertEqual([a.score for a in parse_free_answers(raw, slots).answers], [5, 4, 3, 2, 1, 5])
+        raw = "情境1：I. 5，4，3；II. 3，2；III. 1，5"
+        self.assertEqual([a.score for a in parse_free_answers(raw, slots).answers], [None, None, 3, 2, 1, 5])
+        raw = "1. Episode 1 - I: 5, 4\n2. Episode 1 - II: 3, 2\n3. Episode 1 - III: 1, 5"
+        self.assertEqual([a.score for a in parse_free_answers(raw, slots).answers], [5, 4, 3, 2, 1, 5])
+
+    def test_human_rights_source_text_after_roman_heading(self):
+        slots = [rating("First statement.", "human_rights_e01_viewpoint_01", context_id="human_rights_e01", section_id="viewpoint"),
+                 rating("Second statement.", "human_rights_e01_viewpoint_02", context_id="human_rights_e01", section_id="viewpoint")]
+        result = parse_free_answers("<Episode 1>\nI. First statement: 4\nSecond statement: 5", slots)
+        self.assertEqual([a.score for a in result.answers], [4, 5])
+
+    def test_human_rights_semicolon_separates_exact_source_statements(self):
+        slots = [rating("First statement.", "human_rights_e01_viewpoint_01", context_id="human_rights_e01", section_id="viewpoint"),
+                 rating("Second statement.", "human_rights_e01_viewpoint_02", context_id="human_rights_e01", section_id="viewpoint")]
+        for delimiter in ("; ", "；"):
+            for first, second, expected in (("First statement: 4", "Second statement: 5", [4, 5]),
+                                            ("Second statement: 5", "First statement: 4", [4, 5])):
+                result = parse_free_answers("<Episode 1> I. " + first + delimiter + second, slots)
+                self.assertEqual([a.score for a in result.answers], expected)
+        result = parse_free_answers("<Episode 1> I. First statement: 4; an explanation mentions 5", slots)
+        self.assertIsNone(result.answers[1].score)
+
+    def test_attribution_copied_pronoun_typo_keeps_exact_actor_and_event(self):
+        question = "艾玛·彼得森周围环境的特征影响了她的行为（向孤儿院捐赠一大笔钱）。"
+        slot = rating(question, "attribution_s05_a02", context_id="attribution_s05", section_id="attribution_agreement")
+        raw = "情境五：\nA.\n" + question.replace("影响了她的行为", "影响了他的行为") + " 4"
+        self.assertEqual(parse_free_answers(raw, [slot]).answers[0].score, 4)
+        distractor = rating("艾玛·彼得森自身的特征影响了她的行为（向孤儿院捐赠一大笔钱）。", "attribution_s05_a01", context_id="attribution_s05", section_id="attribution_agreement")
+        for changed in (raw.replace("艾玛·彼得森", "另一人"), raw.replace("捐赠一大笔钱", "拒绝捐赠")):
+            result = parse_free_answers(changed, [slot, distractor])
+            self.assertTrue(all(a.score is None for a in result.answers))
+
+    def test_outer_answer_row_numbers_do_not_override_episode_and_section(self):
+        slots = [rating(f"Statement {i}", f"human_rights_e{episode:02d}_{section}_{i:02d}",
+                        context_id=f"human_rights_e{episode:02d}", section_id=section)
+                 for episode in (2, 1) for section in ("viewpoint", "outcome", "action") for i in (1, 2)]
+        raw = ("1. Episode 2 - I: 4, 5\n2. Episode 2 - II: 3, 5\n3. Episode 2 - III: 2, 5\n"
+               "4. Episode 1 - I: 3, 4\n5. Episode 1 - II: 2, 4\n6. Episode 1 - III: 1, 4")
+        result = parse_free_answers(raw, slots)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual([a.score for a in result.answers], [4, 5, 3, 5, 2, 5, 3, 4, 2, 4, 1, 4])
+
+    def test_unnumbered_exact_source_question_with_trailing_score(self):
+        slots = [rating("您在多大程度上认为一家医院是一个群体？", "attribution_groupness_01", context_id="attribution_groupness"),
+                 rating("您在多大程度上认为一家银行是一个群体？", "attribution_groupness_02", context_id="attribution_groupness")]
+        result = parse_free_answers("您在多大程度上认为一家医院是一个群体？ 7\n您在多大程度上认为一家银行是一个群体？ 6", slots)
+        self.assertEqual([a.score for a in result.answers], [7, 6])
+        for heading in ("群体性判断：", "群体判断", "Group Perception:"):
+            self.assertEqual([a.score for a in parse_free_answers(heading + "\n7, 6", slots).answers], [7, 6])
+        for raw in ("医院 7\n银行 6", "医院\n7\n银行\n6", "群体性：医院 7，银行 6"):
+            self.assertEqual([a.score for a in parse_free_answers(raw, slots).answers], [7, 6])
+
+    def test_codebook_in_continuation_is_not_a_second_score(self):
+        raw = "1. 6\n评分说明：1=最低，2=低，3=中，4=高，5=最高。"
+        self.assertEqual(parse_free_answers(raw, [rating("Question")]).answers[0].score, 6)
+        self.assertIsNone(parse_free_answers(raw.split("\n")[1], [rating("Question")]).answers[0].score)
+
+    def test_merged_interview_headings_can_use_complete_followup_numbers(self):
+        slots = [ScaleSlot(slot_id="a", question="1. First?\n2. Second?", response_type="text", metadata={"open_ended": True}),
+                 ScaleSlot(slot_id="b", question="1. Report?", response_type="text", metadata={"open_ended": True}),
+                 ScaleSlot(slot_id="c", question="2. Trial?\n3. Punish?", response_type="text", metadata={"open_ended": True})]
+        raw = "Situation 1: Story\n1. Yes.\n2. No.\nSituation 2: Report and trial\n1. Report.\n2. Trial.\n3. Leniency."
+        result = parse_kohlberg_free_answers(raw, slots)
+        self.assertEqual(result.status, "ok")
+        self.assertNotIn("Situation 2", result.answers[0].answer)
+        self.assertIn("Report.", result.answers[1].answer)
+        self.assertEqual(result.answers[2].answer, "2. Trial.\n3. Leniency.")
+
     def test_inline_emphasized_score_after_source_question(self):
         for raw in ("1. Alpha statement. **4 = neutral**", "1. Alpha statement.**4**"):
             self.assertEqual(parse_free_answers(raw, [rating("1. Alpha statement.")]).answers[0].score, 4)

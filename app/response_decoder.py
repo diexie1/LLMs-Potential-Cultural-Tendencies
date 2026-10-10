@@ -38,8 +38,9 @@ _NUMBERS["十"] = 10
 _OUTER = re.compile(r"^(?:情境|场景|故事|episode|situation|scenario|story|dilemma)\s*(?:第|#)?\s*(\d+|[一二三四五六七八九十]+|one|two|three|four|five|six|seven|eight|nine|ten)(?=\s|[:：.、]|$)", re.I)
 _ITEM = re.compile(r"^(?:(?:item|question|q)\s*|第\s*)?[（(]?(\d+)\s*(?:题|问)?(?:\.(?!\d)|[、)）:：])\s*(.*)$", re.I)
 _SECTION = re.compile(r"^(III|II|I|A|B|C)\s*[.:：、]\s*(.*)$", re.I)
-_SCALAR = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\s*[%％分人]|\s*/\s*\d+)?(?:\s*(?:[=:(（—–,;。；-]|[.!?]\s*$|$))")
+_SCALAR = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?(?:\s*[%％分人]|\s*/\s*\d+)?(?:\s*(?:[=:(（—–,;。；-]|[.!?]\s*$|$))")
 _SUMMARY = re.compile(r"summary|summari[sz]|总结|汇总|整理|合成.*答案|最终(?:答案|分数|回答)|final\s+(?:answers?|scores?|list)|百分比列表", re.I)
+_GROUPNESS_HEADING = re.compile(r"^(?:group(?:ness|\s+perception)|群体(?:实体性|感知|知觉|性)?)(?:判断|评分)?\s*(?:[:：]\s*(.*)|$)", re.I)
 
 # These identify a value the respondent explicitly selected, including a
 # final scalar supplied after discussing an interval. They do not infer a
@@ -50,7 +51,7 @@ _SELECTED_NUMBER = re.compile(
     r"\bI(?:'d| would| will)?\s+(?:rate(?:\s+it)?|estimate|give|choose)|"
     r"\b(?:my\s+(?:score|rating|estimate)|final\s+(?:answer|score))\s*(?:is)?|"
     r"一般(?:可|可以)?给)\s*[:：=]?\s*(?:about|roughly|approximately|约|大约)?\s*"
-    r"(?P<value>[+-]?(?:\d+(?:\.\d+)?|\.\d+))(?!\d|\.\d)", re.I)
+    r"(?P<value>[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)(?!\d|[eE]|\.\d)", re.I)
 
 _IOS_RELATIONS = {
     "colleague": r"\bcolleagues?\b|同事",
@@ -76,10 +77,92 @@ class _Record:
     value: Optional[str] = None
     segment: int = 0
     final_summary: bool = False
+    sequence_list: bool = False
+    identified_slot: Optional[str] = None
 
     @property
     def body(self):
         return "\n".join(self.lines).strip()
+
+
+def _groupness_subject(slot: ScaleSlot) -> Optional[str]:
+    if slot.context_id != "attribution_groupness":
+        return None
+    match = re.search(r"认为(?:一个|一家)?(.+?)是一个群体|perceive\s+(?:an?\s+)?(.+?)\s+to be a group", slot.question, re.I)
+    return next((part for part in match.groups() if part), None) if match else None
+
+
+def _contextual_lines(text: str, slots: Sequence[ScaleSlot]) -> list[str]:
+    """Expose compact scenario/section headings without changing answer text."""
+    lines = []
+    subjects = [re.escape(label) for slot in slots if (label := _groupness_subject(slot))]
+    for raw in text.splitlines():
+        clean = _plain(raw).replace("<", "").replace(">", " ")
+        numbered = _ITEM.match(clean)
+        if numbered and _OUTER.match(numbered.group(2)):
+            clean = numbered.group(2)
+        outer = _OUTER.match(clean)
+        if outer:
+            lines.append(clean[:outer.end()])
+            raw = clean[outer.end():].lstrip(" :：.、")
+            raw = re.sub(r"^[-—–]\s+(?=(?:III|II|I|A|B|C)\s*[:.：、])", "", raw)
+        groupness = _GROUPNESS_HEADING.match(clean)
+        if groupness and groupness.group(1):
+            lines.append(clean[:groupness.start(1)])
+            raw = groupness.group(1)
+        if subjects:
+            raw = re.sub(r"[,，]\s*(?=(?:" + "|".join(subjects) + r")(?:\s|[:：]|$))", "\n", raw, flags=re.I)
+        if _SECTION.match(_plain(raw)):
+            raw = re.sub(r"(?:[;；]\s*|\s+)(?=(?:III|II|I|A|B|C)\s*[.:：、])", "\n", raw)
+        lines.extend(raw.split("\n"))
+    return lines
+
+
+def _section_sequences(records: list[_Record], slots: Sequence[ScaleSlot]) -> list[_Record]:
+    from .prompting import _free_positional_answers, _free_positional_tokens
+
+    def eligible(record):
+        return [s for s in slots if s.context_id == record.context
+                and (record.section is None or s.section_id == record.section)]
+
+    def validated(body, selected):
+        answers = _free_positional_answers(body, selected) if selected else None
+        return answers is not None and all(a.parse_status == "parsed" for a in answers)
+
+    # A detached final six-value block can be the final group-perception task,
+    # only after every scenario's A/B/C answers is complete and appears once.
+    group_slots = [s for s in slots if s.context_id == "attribution_groupness"]
+    if records and group_slots and not any(r.context == "attribution_groupness" for r in records):
+        last = records[-1]
+        parts = re.split(r"\n\s*\n", last.body)
+        scenario_contexts = {s.context_id for s in slots if s.context_id != "attribution_groupness"}
+        expected = {(c, section) for c in scenario_contexts for section in
+                    ("attribution_agreement", "other_actor_probability", "same_actor_probability")}
+        keys = [(r.context, r.section) for r in records]
+        if (last.section == "same_actor_probability" and len(parts) == 2
+            and len(keys) == len(expected) and set(keys) == expected
+            and validated(parts[1], group_slots)
+            and all(validated(parts[0] if r is last else r.body, eligible(r)) for r in records)):
+            last.lines = parts[0].splitlines()
+            records.append(_Record(None, "attribution_groupness", None, parts[1].splitlines(),
+                                   segment=last.segment, final_summary=last.final_summary, sequence_list=True))
+    expanded = []
+    for record in records:
+        if record.sequence_list:
+            selected = eligible(record)
+            body = record.body
+            if str(record.context).startswith("human_rights_") and len(selected) == 2:
+                pair = re.fullmatch(r"\s*A\s*[:=]\s*([+-]?\d+(?:\.\d+)?)\s*[,;]?\s*B\s*[:=]\s*([+-]?\d+(?:\.\d+)?)\s*", _plain(body), re.I)
+                if pair:
+                    body = " ".join(pair.groups())
+            if validated(body, selected):
+                for token in _free_positional_tokens(body):
+                    expanded.append(_Record(None, record.context, record.section, [token], token,
+                                            record.segment, record.final_summary))
+            # A heading or an incomplete unlabelled list cannot supply answers.
+        else:
+            expanded.append(record)
+    return expanded
 
 
 def _records(text: str, slots: Sequence[ScaleSlot]) -> list[_Record]:
@@ -96,7 +179,9 @@ def _records(text: str, slots: Sequence[ScaleSlot]) -> list[_Record]:
     headers: list[str] = []
     segment = 0
     final_summary = False
-    for raw in str(text or "").splitlines():
+    lines = _contextual_lines(str(text or ""), slots) if attribution or human_rights else str(text or "").splitlines()
+    group_subjects = [(s, label) for s in slots if (label := _groupness_subject(s))] if attribution else []
+    for raw in lines:
         line = _plain(raw)
         heading = (line.endswith((":", "：")) or raw.lstrip().startswith("#")
                    or (raw.strip().startswith("**") and raw.strip().endswith("**")))
@@ -107,14 +192,15 @@ def _records(text: str, slots: Sequence[ScaleSlot]) -> list[_Record]:
                 current = None
                 headers = []
                 continue
-            task_heading = heading or re.match(r"^(?:task\s*[12]|任务[一二12]|第[一二](?:任务|部分)|logical\s+validity|now\s+scoring)", line, re.I)
+            scores_heading = bool(re.fullmatch(r"(?:scores|分数汇总|第二任务分数)\s*[:：]?", line, re.I))
+            task_heading = heading or scores_heading or re.match(r"^(?:task\s*[12]|任务[一二12]|第[一二](?:任务|部分)|logical\s+validity|now\s+scoring)", line, re.I)
             if (reasoning and len(line) < 80 and task_heading
                 and not re.search(r"前面|后面|我会|先说明|要求|I'll|I will|evaluate each", line, re.I)):
                 if re.search(r"logical\s+validity|逻辑(?:有效性|正确性|推导|判断)|任务一|task\s*1", line, re.I):
                     section, current = "logical_validity", None
                     segment += 1
                     continue
-                if re.search(r"real.world\s+(?:truth|knowledge)|truth\s+scor|now\s+scoring|believab|任务二|task\s*2|信念|真实性|可信度|一般(?:情况|常识).*(?:评分|分数|打分)", line, re.I):
+                if scores_heading or re.search(r"real.world\s+(?:truth|knowledge)|truth\s+scor|now\s+scoring|believab|任务二|task\s*2|信念|真实性|可信度|一般(?:情况|常识).*(?:评分|分数|打分)", line, re.I):
                     section, current = "conclusion_believability", None
                     segment += 1
                     continue
@@ -127,10 +213,28 @@ def _records(text: str, slots: Sequence[ScaleSlot]) -> list[_Record]:
             section = None
             current = None
             headers = []
+            if human_rights:
+                current = _Record(None, context, None, [], segment=segment,
+                                  final_summary=final_summary, sequence_list=True)
+                records.append(current)
             continue
-        if attribution and re.search(r"group(?:ness|\s+perception)|群体(?:实体性|感知|知觉|性|评分)", line, re.I) and not _ITEM.match(line):
+        groupness = _GROUPNESS_HEADING.match(line) if attribution else None
+        if groupness:
             context, section, current = "attribution_groupness", None, None
             headers = []
+            rest = groupness.group(1) or ""
+            current = _Record(None, context, section, [rest], segment=segment, final_summary=final_summary, sequence_list=True)
+            records.append(current)
+            continue
+        named_group = [(s, line[len(label):].lstrip(" :：")) for s, label in group_subjects
+                       if line.casefold().startswith(label.casefold())
+                       and (len(line) == len(label) or line[len(label)] in " :：")]
+        if len(named_group) == 1:
+            slot, tail = named_group[0]
+            context, section = slot.context_id, slot.section_id
+            current = _Record(None, context, section, [raw.strip()], value=tail or None,
+                              segment=segment, final_summary=final_summary, identified_slot=slot.slot_id)
+            records.append(current)
             continue
         sub = _SECTION.match(line)
         if sub and context in contexts:
@@ -139,14 +243,36 @@ def _records(text: str, slots: Sequence[ScaleSlot]) -> list[_Record]:
                        if human_rights else {"A": "attribution_agreement", "B": "other_actor_probability", "C": "same_actor_probability"}.get(label))
             current = None
             headers = []
-            if attribution and label in {"B", "C"}:
+            if human_rights and section is not None:
+                parts = re.split(r"[;；]\s*", sub.group(2))
+                selected = []
+                for part in parts:
+                    matches = [s for s in slots if s.context_id == context and s.section_id == section
+                               and (tail := _question_tail(s, _plain(part))) and _SCALAR.match(tail)]
+                    selected.append(matches[0] if len(matches) == 1 else None)
+                if (len(parts) == 2 and all(selected)
+                    and len({s.slot_id for s in selected}) == 2):
+                    # Each side repeats a different exact source statement.
+                    # Semicolons in explanations alone do not establish a pair.
+                    for part, slot in zip(parts, selected):
+                        current = _Record(None, context, section, [part], segment=segment,
+                                          final_summary=final_summary, identified_slot=slot.slot_id)
+                        records.append(current)
+                    continue
+            if attribution and label in {"A", "B", "C"}:
                 original_sub = _SECTION.match(_source_line(raw))
-                current = _Record(None, context, section, [original_sub.group(2) if original_sub else raw], segment=segment, final_summary=final_summary)
+                current = _Record(None, context, section, [original_sub.group(2) if original_sub else raw], segment=segment, final_summary=final_summary, sequence_list=label == "A")
                 records.append(current)
-            elif human_rights and re.search(r"\*\*[+-]?\d+(?:\.\d+)?\*\*\s*$", raw.strip()):
+            elif human_rights and (re.search(r"\*\*[+-]?\d+(?:\.\d+)?\*\*\s*$", raw.strip())
+                  or any(s.context_id == context and s.section_id == section
+                         and (tail := _question_tail(s, _plain(sub.group(2)))) and _SCALAR.match(tail) for s in slots)):
                 # Some responses repeat I/II/III on each answer, instead of
                 # writing a section heading followed by two numbered rows.
                 current = _Record(None, context, section, [sub.group(2)], segment=segment, final_summary=final_summary)
+                records.append(current)
+            elif human_rights and section is not None:
+                current = _Record(None, context, section, [sub.group(2)], segment=segment,
+                                  final_summary=final_summary, sequence_list=True)
                 records.append(current)
             continue
         cells = _free_split_markdown_row(raw) if "|" in raw else None
@@ -191,6 +317,20 @@ def _records(text: str, slots: Sequence[ScaleSlot]) -> list[_Record]:
             current = _Record(None, context, section, [raw.strip()], segment=segment, final_summary=final_summary)
             records.append(current)
             continue
+        exact = ([s for s in slots
+                  if (context is None or s.context_id == context
+                      or attribution and context in contexts and s.context_id == "attribution_groupness")
+                  and (section is None or s.section_id == section
+                       or attribution and context in contexts and s.context_id == "attribution_groupness")
+                  and (tail := _question_tail(s, line)) and _SCALAR.match(tail)]
+                 if re.search(r"[a-zA-Z\u4e00-\u9fff]{4}", line) else [])
+        if len(exact) == 1:
+            slot = exact[0]
+            context, section = slot.context_id, slot.section_id
+            current = _Record(None, slot.context_id, slot.section_id, [raw.strip()],
+                              segment=segment, final_summary=final_summary)
+            records.append(current)
+            continue
         # Unnumbered answer rows can still identify an exact source question.
         if (re.match(r"^\s*[-•]\s+", raw) and re.search(r"[:：→]", line)
             and not re.match(r"^(?:score|rating|评分|分数|得分|一般情况分数|逻辑(?:判断|推导)?|premises?\s*\d*|前提\s*\d*|conclusion|结论|reason|explanation)\s*[:：=]", line, re.I)):
@@ -199,23 +339,46 @@ def _records(text: str, slots: Sequence[ScaleSlot]) -> list[_Record]:
             continue
         if current is not None:
             current.lines.append(raw.rstrip())
-    return records
+    return _section_sequences(records, slots) if attribution or human_rights else records
 
 
 def _question_tail(slot: ScaleSlot, line: str) -> Optional[str]:
     question = _plain(slot.question.splitlines()[0]) if slot.question else ""
     marker = _ITEM.match(question)
-    question = marker.group(2) if marker else question
+    full_question = marker.group(2) if marker else question
+    question = full_question.rstrip(".。?？")
     nested = _ITEM.match(line)
     if nested and nested.group(2).startswith(question):
         line = nested.group(2)
+    if (slot.slot_id.startswith("attribution_s") and slot.section_id == "attribution_agreement"
+        and not line.startswith(question)):
+        # Observed copied wording differs only in this Chinese pronoun. Keep
+        # the actor, causal attribute, event and every other character exact.
+        for original, alternate in (("影响了她的行为", "影响了他的行为"),
+                                    ("影响了他的行为", "影响了她的行为")):
+            if original in question:
+                variant = question.replace(original, alternate, 1)
+                if line.startswith(variant):
+                    question = variant
+                    full_question = full_question.replace(original, alternate, 1)
+                    break
     if len(_signature(question)) >= 4 and line.startswith(question):
-        return line[len(question):].lstrip(" \t:：=→—–")
+        prefix = full_question if line.startswith(full_question) else question
+        tail = line[len(prefix):].lstrip(" \t:：=→。?？")
+        if re.match(r"^[—–][0-9]", tail):
+            return tail  # Adjacent dash may be a minus; do not flip its sign.
+        tail = tail.lstrip("—– ")
+        tail = re.sub(r"^\.(?!\d)", "", tail, count=1).lstrip(" \t:：=→—–。?？")
+        # A spaced ASCII dash after the exact source question is a separator;
+        # a signed value such as -2 keeps its minus sign.
+        return re.sub(r"^-\s+", "", tail, count=1)
     return None
 
 
 def _logical_decision(line: str) -> Optional[str]:
     """Read an explicit premise-based decision, never a truth-score alias."""
+    if re.search(r"\bnot\s+(?:logically\s+)?invalid\b|(?:并非|不是)\s*(?:逻辑(?:上)?无效|不能推出)|\bif\b.*\blogically\s+(?:valid|invalid)\b|如果.*逻辑.*(?:有效|无效)", line, re.I):
+        return None  # Double negations and hypothetical statements need review.
     if re.match(r"^[+-]?\d", line):
         parts = re.split(r"\s+[—–]\s*", line, maxsplit=1)
         if len(parts) < 2:
@@ -223,12 +386,13 @@ def _logical_decision(line: str) -> Optional[str]:
         line = parts[1]
     if re.match(r"^(?:一般情况|(?:评分|分数|得分|score|rating)\s*[:：])", line, re.I):
         return None
-    if re.search(r"\b(?:YES|NO|VALID|INVALID)\s*(?:or|and)\s*(?:YES|NO|VALID|INVALID)\b", line, re.I):
+    if re.search(r"\b(?:YES|NO|VALID|INVALID)(?:\s+(?:or|and)\s+|\s*[/／|,，]\s*|\s+)(?:YES|NO|VALID|INVALID)\b", line, re.I):
         return None
     # The surrounding wording is required: a premise beginning with 'No',
     # or a belief score labelled 'definitely true', is not a logical answer.
     negative = re.search(r"(?:\b(?:this|the\s+conclusion|conclusion|it)\s+(?:does\s+not|doesn't|cannot|can't)\s+(?:logically\s+)?follow\b|"
-                         r"\b(?:logically\s+invalid|(?:the\s+)?conclusion\s+contradicts\s+(?:the\s+)?(?:premises?|valid\s+inference)|this\s+does\s+not\s+imply)\b|"
+                         r"\b(?:not\s+logically\s+valid|logically\s+(?:not\s+valid|invalid)|(?:the\s+)?conclusion\s+contradicts\s+(?:the\s+)?(?:premises?|valid\s+inference)|this\s+does\s+not\s+imply)\b|"
+                         r"(?:并非|不是|不具备|没有)\s*逻辑(?:上)?(?:的)?(?:有效|成立)|"
                          r"(?:结论|逻辑|推理|推导)[^。；\n]{0,12}(?:不能推出|不成立|无效|不有效))", line, re.I)
     positive = re.search(r"\b(?:(?:this|the\s+conclusion|conclusion|it)\s+)?follows\s+logically\s+from\s+(?:the\s+)?premises\b|"
                          r"\b(?:this|the\s+conclusion|conclusion|it)\s+follows\s+(?:logically|from\s+(?:the\s+)?premises)\b|\blogically\s+valid\b|"
@@ -239,6 +403,8 @@ def _logical_decision(line: str) -> Optional[str]:
     if positive and not negative:
         decisions.add("YES")
     for match in re.finditer(r"(?:^|[。.!:：—–]\s*|\s)(YES|NO|VALID|INVALID)\s*(?=$|[.!:：,(（]|from\s+(?:the\s+)?premises)", line, re.I):
+        if re.search(r"(?:not\s+(?:logically\s+)?|logically\s+not\s+)$", line[:match.start(1)], re.I):
+            continue
         decisions.add("YES" if match.group(1).upper() in {"YES", "VALID"} else "NO")
     marked = re.search(r"(?:逻辑(?:判断|推导|判断结果)?|已判断|判断|答案|answer)\s*[:：]\s*(不能推出|能推出|可推出|是|否|YES|NO)(?=$|[。，,.!（(\s])", line, re.I)
     if marked:
@@ -257,7 +423,7 @@ def _decode(slot: ScaleSlot, body: str, value: Optional[str] = None):
                            _free_numeric_answer, _free_text_response, _is_open_text_slot,
                            _free_extract_choice, _free_extract_ios_pair, _FREE_SCORE_MARKER,
                            _RANGE_ALNUM, _RANGE_OR, _RANGE_BETWEEN,
-                           _free_extract_interval, _free_range_answer)
+                           _free_extract_interval, _free_range_answer, _free_source_option)
     if _is_open_text_slot(slot):
         return _free_text_response(slot, body)
     target = value if value is not None else body
@@ -274,16 +440,26 @@ def _decode(slot: ScaleSlot, body: str, value: Optional[str] = None):
         interval = None
         if not line or line == "---":
             continue
+        if len(re.findall(r"(?<!\d)\d+(?:\.\d+)?\s*=", line)) >= 3:
+            # Repeated response-option definitions are not a selected score.
+            continue
         if re.match(r"^[+-]?\d+(?:\.\d+)?\s*[,;]\s*[+-]?\d", line):
             # A compact aggregate score list cannot become this one item's score.
             continue
         if value is None and position == 0:
             tail = _question_tail(slot, line)
             if tail is not None:
+                if re.match(r"^[—–][0-9]", tail):
+                    return ParsedAnswer(answer=body, slot_id=slot.slot_id, parse_status="unparsed",
+                                        parse_error="An adjacent dash may denote a negative value or a separator; no sign was guessed.")
                 if not tail:
                     continue
-                if re.match(r"^(?:[+-]?\d|[①②③④⑤⑥⑦⑧⑨⑩]|YES\b|NO\b|VALID\b|INVALID\b|[AB](?=$|[.：:（(\s]))", tail, re.I):
+                if re.match(r"^(?:[+-]?(?:\d|\.\d)|[①②③④⑤⑥⑦⑧⑨⑩]|YES\b|NO\b|VALID\b|INVALID\b|[AB](?=$|[.：:（(\s]))", tail, re.I):
                     line = tail
+        source_option = _free_source_option(slot, line)
+        if source_option is not None:
+            candidates.append(_free_parse_value(slot, source_option))
+            continue
         if slot.choices:
             if slot.response_type == "ios_pair":
                 chosen = _free_extract_ios_pair(line, slot.choices)
@@ -378,8 +554,6 @@ def _decode(slot: ScaleSlot, body: str, value: Optional[str] = None):
         return ParsedAnswer(answer=body, slot_id=slot.slot_id, parse_status="range_unresolved", parse_error="A range or alternatives were retained without selecting one value.")
     if candidates:
         answer = candidates[0]
-        if slot.response_type == "integer" and answer.score is not None and not float(answer.score).is_integer():
-            return ParsedAnswer(answer=body, slot_id=slot.slot_id, parse_status="non_integer", parse_error="The supplied value is not an integer; it was not rounded.")
         if not slot.choices:
             answer.answer = body
         return answer
@@ -415,17 +589,74 @@ def _reasoning_landmarks(slots: Sequence[ScaleSlot]) -> dict[str, set[str]]:
             for key, vocabulary in words.items()}
 
 
+def _reasoning_typed_records(records: list[_Record], slots: Sequence[ScaleSlot]) -> list[_Record]:
+    """Separate bare numbered decisions and scores before resolving item numbers.
+
+    Original question numbers restart in the belief task. The answer type
+    identifies its task, while the saved source/display order still determines
+    which question it belongs to. Combined prose is left to the normal decoder.
+    """
+    sections = {slot.section_id for slot in slots if slot.slot_id.startswith("reasoning_")}
+    if not {"logical_validity", "conclusion_believability"}.issubset(sections):
+        return records
+    inferred_numeric = defaultdict(list)
+    for record in records:
+        if record.section is not None or record.number is None:
+            continue
+        body = _plain(record.value if record.value is not None else record.body)
+        if re.fullmatch(r"(?:是|否|YES|NO|VALID|INVALID|正确|错误)[.!。！]?", body, re.I):
+            record.section = "logical_validity"
+        elif re.fullmatch(r"(?:(?:分数|评分|score|rating)\s*[:：=]\s*)?[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?[。.!]?", body, re.I):
+            record.section = "conclusion_believability"
+            inferred_numeric[record.segment].append(record)
+    belief_numbers = set()
+    for slot in slots:
+        if slot.section_id == "conclusion_believability":
+            marker = _ITEM.match(_plain(slot.question.splitlines()[0]))
+            number = int(marker.group(1)) if marker else slot.metadata.get("argument_no")
+            if number is not None:
+                belief_numbers.add(int(number))
+    for group in inferred_numeric.values():
+        if belief_numbers and any(record.number not in belief_numbers for record in group):
+            # A scored 24-item logic list is not the separate 16-item task.
+            # Do not salvage a few coincidentally equal display/source IDs.
+            for record in group:
+                record.context = "unresolved_reasoning_numeric_task"
+    return records
+
+
 def decode_free_response(text: str, slots: Sequence[ScaleSlot], *, allow_positional_fallback=False):
     from .prompting import (ParsedAnswer, ParseResult, FREE_STATUS_READABLE,
                            _parse_free_answers_legacy, _is_open_text_slot, _free_text_response,
-                           FREE_PARSER_VERSION)
+                           _free_positional_answers, FREE_PARSER_VERSION)
     if len(slots) == 1 and _is_open_text_slot(slots[0]) and str(text or "").strip():
         answer = _free_text_response(slots[0], str(text).strip())
         answer.mapping_method = "single_open_item"
         return ParseResult([answer], "ok", recovery=FREE_PARSER_VERSION)
+    if allow_positional_fallback:
+        positional = _free_positional_answers(text, slots)
+        if positional is not None:
+            for answer in positional:
+                answer.mapping_method = "complete_response_order"
+            read = sum(a.parse_status in FREE_STATUS_READABLE for a in positional)
+            return ParseResult(positional, "ok" if read == len(slots) else "partial" if read else "unparsed",
+                               recovery=f"{FREE_PARSER_VERSION}-positional-v1")
+        reasoning_sections = {s.section_id for s in slots if s.slot_id.startswith("reasoning_")}
+        if {"logical_validity", "conclusion_believability"}.issubset(reasoning_sections):
+            for task in ("logical_validity", "conclusion_believability"):
+                task_indices = [i for i, s in enumerate(slots) if s.section_id == task]
+                task_answers = _free_positional_answers(text, [slots[i] for i in task_indices])
+                if task_answers is not None and all(a.parse_status == "parsed" for a in task_answers):
+                    answers = [ParsedAnswer(slot_id=s.slot_id, parse_status="missing") for s in slots]
+                    for index, answer in zip(task_indices, task_answers):
+                        answer.mapping_method = "complete_typed_task_order"
+                        answers[index] = answer
+                    return ParseResult(answers, "partial", recovery=FREE_PARSER_VERSION,
+                                       error="Only one complete typed task was supplied; the other task remains missing.")
     records = _records(text, slots)
     if not records:
         return _parse_free_answers_legacy(text, slots, allow_positional_fallback=allow_positional_fallback)
+    records = _reasoning_typed_records(records, slots)
     answers = [ParsedAnswer(slot_id=s.slot_id, parse_status="missing") for s in slots]
     groups = defaultdict(list)
     landmarks = _reasoning_landmarks(slots)
@@ -501,6 +732,9 @@ def decode_free_response(text: str, slots: Sequence[ScaleSlot], *, allow_positio
                 matches = overlap
             method = "question_text" if matches else "task_subject" if aliases else "question_prefix"
             matches = list(dict.fromkeys(matches or aliases or prefixes))
+            if record.identified_slot:
+                matches = [i for i in eligible if slots[i].slot_id == record.identified_slot]
+                method = "source_subject"
             pair = []
             if len(matches) > 1:
                 typed = [i for i in matches if _decode(slots[i], record.body, record.value).parse_status in FREE_STATUS_READABLE]
@@ -551,7 +785,7 @@ def decode_free_response(text: str, slots: Sequence[ScaleSlot], *, allow_positio
                     index, method = display, "local_number"
             if index is None and positional_table:
                 index, method = eligible[position], "complete_section_order"
-            if index is None and len(eligible) == 1:
+            if index is None and record.number is None and len(eligible) == 1:
                 index, method = eligible[0], "single_section_item"
             targets = paired_matches[position] or ([index] if index is not None else [])
             if paired_matches[position]:
@@ -591,6 +825,28 @@ def decode_free_response(text: str, slots: Sequence[ScaleSlot], *, allow_positio
                                                    slot_id=slots[index].slot_id, parse_status="conflicting_answers",
                                                    parse_error="Repeated answers include an unresolved value; raw text was retained.",
                                                    mapping_method=method)
+        # With no wording evidence, shuffled source numbers and display numbers
+        # can both be plausible. Recover only values identical under BOTH maps.
+        complete_labels = list(range(1, len(eligible) + 1))
+        if (not votes and not source_mode and len(group) == len(eligible)
+            and all(n is not None for n in labels) and sorted(labels) == complete_labels
+            and sorted(source_numbers) == complete_labels
+            and all(len(ids) == 1 for ids in source_numbers.values())):
+            by_number = {r.number: r for r in group}
+            for position, index in enumerate(eligible, 1):
+                if answers[index].parse_status != "missing" or _is_open_text_slot(slots[index]):
+                    continue
+                original_number = next(n for n, ids in source_numbers.items() if ids == [index])
+                source_record, display_record = by_number[original_number], by_number[position]
+                a, b = (_decode(slots[index], r.body, r.value) for r in (source_record, display_record))
+                same_value = (a.score, a.range_lower, a.range_upper, a.range_unit) == (b.score, b.range_lower, b.range_upper, b.range_unit)
+                if (a.parse_status == b.parse_status and a.parse_status in FREE_STATUS_READABLE
+                    and same_value and (a.score is not None or a.range_lower is not None
+                                        or slots[index].choices and a.answer == b.answer)):
+                    a.mapping_method = "numbering_invariant_value"
+                    if not slots[index].choices and source_record.body != display_record.body:
+                        a.answer = source_record.body + "\n\n" + display_record.body
+                    answers[index] = a
     read = sum(a.parse_status in FREE_STATUS_READABLE for a in answers)
     status = "ok" if read == len(slots) else "partial" if read else "unparsed"
     return ParseResult(answers=answers, status=status, recovery=FREE_PARSER_VERSION, error=None if status == "ok" else "Some answers could not be mapped or decoded unambiguously; raw_response was retained.")
@@ -604,6 +860,12 @@ def decode_interview_rows(text: str, slots: Sequence[ScaleSlot]):
     """
     from .prompting import ParsedAnswer, ParseResult, FREE_PARSER_VERSION
     lines = str(text or "").splitlines()
+    numbered = _complete_interview_numbering(lines, slots)
+    if numbered is not None:
+        complete = all(a.parse_status == "text_response" for a in numbered)
+        return ParseResult(numbered, "ok" if complete else "partial",
+                           error=None if complete else "Only a complete prefix of interview rows was supplied; remaining rows were retained as missing.",
+                           recovery=f"interview-question-order-{FREE_PARSER_VERSION}")
     anchors = {}
     first_questions = {}
     for index, slot in enumerate(slots):
@@ -649,3 +911,57 @@ def decode_interview_rows(text: str, slots: Sequence[ScaleSlot]):
     return ParseResult(answers, "ok" if read == len(slots) else "partial",
                        error=None if read == len(slots) else "Some source interview rows lack unique question boundaries; raw_response was retained.",
                        recovery=f"interview-source-rows-{FREE_PARSER_VERSION}")
+
+
+def _complete_interview_numbering(lines: list[str], slots: Sequence[ScaleSlot]):
+    """Segment fixed-order interview rows only with a complete number skeleton."""
+    from .prompting import ParsedAnswer, _is_open_text_slot
+    marker = re.compile(r"^(\d+)[a-z]?\s*[.、):：]\s*(.*)$", re.I)
+
+    def runs(source):
+        found = []
+        for position, line in enumerate(source):
+            match = marker.match(_plain(line))
+            if match and (not found or found[-1][0] != int(match.group(1))):
+                found.append((int(match.group(1)), position))
+        return found
+
+    if len(slots) < 2 or not all(_is_open_text_slot(s) for s in slots):
+        return None
+    source_runs = [runs(s.question.splitlines()) for s in slots]
+    if any(not row for row in source_runs):
+        return None
+    expected = [number for row in source_runs for number, _ in row]
+    actual = runs(lines)
+    boundaries, total = [], 0
+    for row in source_runs:
+        total += len(row)
+        boundaries.append(total)
+    if (len(actual) < 4 or len(actual) not in boundaries[1:]
+        or [number for number, _ in actual] != expected[:len(actual)]):
+        return None
+    starts = {actual[i][1] for i in [0] + boundaries[:-1] if i < len(actual)}
+    # Story headings may merge continuation rows. Each supplied heading must
+    # still precede an actual source-row boundary, never interrupt its questions.
+    headings = [position for position, line in enumerate(lines) if _OUTER.match(_plain(line))]
+    for heading in headings:
+        following = next((position for _, position in actual if position > heading), None)
+        if following not in starts:
+            return None
+    answers, cursor = [], 0
+    for index, (slot, row) in enumerate(zip(slots, source_runs)):
+        if cursor == len(actual):
+            answers.append(ParsedAnswer(slot_id=slot.slot_id, parse_status="missing"))
+            continue
+        start = actual[cursor][1]
+        previous = actual[cursor - 1][1] if cursor else -1
+        start = next((h for h in headings if previous < h < start), start)
+        cursor += len(row)
+        end = actual[cursor][1] if cursor < len(actual) else len(lines)
+        end = next((h for h in headings if actual[cursor - 1][1] < h < end), end)
+        body = "\n".join(lines[start:end]).strip()
+        if not re.search(r"[a-zA-Z\u4e00-\u9fff]", re.sub(r"(?m)^\s*\d+[a-z]?\s*[.、):：]", "", body)):
+            return None
+        answers.append(ParsedAnswer(answer=body, slot_id=slot.slot_id, score=None,
+                                    parse_status="text_response", mapping_method="complete_interview_question_order"))
+    return answers

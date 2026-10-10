@@ -16,7 +16,7 @@ from .provenance import canonical_hash
 
 PARSER_VERSION = "strict-answer-json-v1"
 PROFILE_PARSER_VERSION = "strict-slot-json-v2"
-FREE_PARSER_VERSION = "free-text-v10"
+FREE_PARSER_VERSION = "free-text-v14"
 RESPONSE_STATUSES = (
     "ok",
     "partial",
@@ -122,7 +122,7 @@ _RANGE_BETWEEN = re.compile(
 # not search arbitrary prose: numbers in a rationale ("5 people", "2
 # reasons", etc.) are not model scores.
 _FREE_LEADING_NUMBER = re.compile(
-    r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?![\d.])"
+    r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(?![\d.eE])"
 )
 _FREE_SCORE_MARKER = re.compile(
     r"(?:\b(?:score|rating|answer|response|numeric\s+answer)\b\s*"
@@ -1241,7 +1241,7 @@ def _free_extract_numeric(body: str) -> tuple[Optional[float], str]:
     A score is never invented from an uncertain answer.
     """
 
-    body = unicodedata.normalize("NFKC", str(body or "")).strip()
+    body = unicodedata.normalize("NFKC", str(body or "")).replace("−", "-").strip()
 
     def read_target(target: str) -> tuple[Optional[float], str]:
         target = target.lstrip(" \t:：=")
@@ -1249,6 +1249,8 @@ def _free_extract_numeric(body: str) -> tuple[Optional[float], str]:
         # they answer a numbered item as ``**4 = Agree**``.  Removing only
         # leading markup keeps the conservative leading-value rule intact.
         target = re.sub(r"^(?:[*_`~]\s*)+", "", target)
+        if re.match(r"^[+-]?\d+(?:\.\d+)?\s*[,;，；]\s*[+-]?\d", target):
+            return None, "multiple_values"
         if (
             _RANGE_ALNUM.match(target)
             or _RANGE_OR.match(target)
@@ -1259,7 +1261,8 @@ def _free_extract_numeric(body: str) -> tuple[Optional[float], str]:
             return None, "range_unresolved"
         match = _FREE_LEADING_NUMBER.match(target)
         if match:
-            return float(match.group(1)), "parsed"
+            numeric = float(match.group(1))
+            return (numeric, "parsed") if math.isfinite(numeric) else (None, "invalid_number")
         return None, "unparsed"
 
     # A leading scalar is the normal answer form, e.g. ``5 —— reason``. A
@@ -1331,6 +1334,7 @@ _FREE_CHOICE_LEADING = re.compile(
     r"(?:[*_`~]\s*)*"
     r"[\(\[（【]?\s*"
     r"([+-]?\d+(?:\.\d+)?|[A-Za-z]+|是|否|正确|错误)"
+    r"(?![0-9A-Za-z]|\.\d)"
     r"\s*[\)\]）】]?"
     r"(?:[*_`~]\s*)?",
     re.IGNORECASE,
@@ -1377,22 +1381,28 @@ def _free_extract_choice(body: str, choices: Sequence[str]) -> Optional[str]:
     # Prefer an explicitly labelled answer, such as ``选择：是`` or
     # ``I choose B``. This prevents an option mentioned in an explanation from
     # being mistaken for the selected answer.
-    marker = re.search(
-        r"(?:answer|response|choice|selected|selection|choose|select|pick|"
-        r"选择|选项|选|答案|回答|判断|选的是?|我选|我选择)"
+    markers = re.finditer(
+        r"(?:\b(?:answer|response|choice|selected|selection|choose|select|pick)\b|"
+        r"选的是?|我选择|我选|选择|选项|选|答案|回答|判断)"
         r"\s*(?:(?:is|为|是)\s*)?[:：=]?\s*"
-        r"([^\r\n]*)",
+        r"(?=([^\r\n]*))",
         body,
         re.IGNORECASE,
     )
-    if marker:
-        marked_text = marker.group(1).strip()
+    selected = set()
+    for marker in markers:
+        if _free_negated_marker(body, marker.start()):
+            continue
+        marked_text = re.split(r"[;。；]|\.(?!\d)|\n", marker.group(1), maxsplit=1)[0].strip()
         marked = _normalise_choice(_free_choice_token(marked_text), choices)
         if marked is not None:
-            return marked
-        marked = _free_leading_choice_value(marked_text, choices)
-        if marked is not None:
-            return marked
+            selected.add(marked)
+        else:
+            marked = _free_leading_choice_value(marked_text, choices)
+            if marked is not None:
+                selected.add(marked)
+    if selected:
+        return next(iter(selected)) if len(selected) == 1 else None
 
     # Accept a presentation wrapper such as ``图(2)``, ``**A**`` or
     # ``option B`` only at the start of an answer.  This is also why an
@@ -1415,13 +1425,19 @@ def _free_extract_choice(body: str, choices: Sequence[str]) -> Optional[str]:
     return None
 
 
+def _free_negated_marker(text: str, position: int) -> bool:
+    """Recognise a negated selection in the same short clause."""
+    prefix = re.split(r"[.;。；\n]", text[:position])[-1]
+    return bool(re.search(r"(?:\b(?:not|never|don't|doesn't|didn't|cannot|can't)\s+(?:(?:choose|select|pick)\s+)?(?:the\s+)?|(?:不(?:是|选|选择)?|并非|不是)\s*)$", prefix, re.I))
+
+
 def _free_extract_ios_pair(body: str, choices: Sequence[str]) -> Optional[str]:
     """Extract one IOS whole-diagram label without accepting circle pairs."""
     text = unicodedata.normalize("NFKC", str(body or ""))
     text = re.sub(r"[*_`]", "", text)
     label = (r"(?:\b(?:pair|figure|diagram|picture|image|option|choose|select|pick|choice|answer)\b"
              r"|图(?:片|示|形)?|对应|选择|选项|我选|选|答案)")
-    number = r"\(?\s*([1-7])(?![\d.])\s*\)?"
+    number = r"\(?\s*([1-7])(?!\d|\.\d)\s*\)?"
     marked = re.compile(label + r"\s*(?:(?:is|number|no\.?|为|是|编号)\s*)?[:：=#]?\s*(?:第\s*)?" + number, re.I)
     leading = re.compile(r"^\s*" + number)
     alternatives = re.compile(
@@ -1433,9 +1449,15 @@ def _free_extract_ios_pair(body: str, choices: Sequence[str]) -> Optional[str]:
             continue
         # A stated selection outranks numbers appearing in the explanation.
         # Words such as 'and'/'或' are alternatives only next to another code.
-        match = marked.search(line)
+        matches = [m for m in marked.finditer(line) if not _free_negated_marker(line, m.start())]
+        # Several different diagram labels in the answer clause are ambiguous.
+        if len({m.group(1) for m in matches}) > 1:
+            return None
+        match = matches[0] if matches else None
         target = line
         if match is None:
+            if marked.search(line):
+                continue
             target = re.split(r"[:：→]|[—–]|\s+-\s+", line, maxsplit=1)[-1].strip()
             match = leading.match(target)
         if match is None:
@@ -1511,7 +1533,11 @@ def _free_numeric_answer(
     status: str,
 ) -> ParsedAnswer:
     error = None
-    if slot.minimum is not None and numeric < float(slot.minimum):
+    if not math.isfinite(numeric):
+        numeric, status, error = None, "invalid_number", "A non-finite number cannot be a score."
+    elif slot.response_type == "integer" and not float(numeric).is_integer():
+        numeric, status, error = None, "non_integer", "The supplied value is not an integer; it was not rounded."
+    elif slot.minimum is not None and numeric < float(slot.minimum):
         status, error = "out_of_range", f"Score {numeric:g} is below the declared minimum."
     elif slot.maximum is not None and numeric > float(slot.maximum):
         status, error = "out_of_range", f"Score {numeric:g} is above the declared maximum."
@@ -1624,6 +1650,20 @@ def _free_extract_table_answer(
     return None
 
 
+def _free_source_option(slot: ScaleSlot, value: Any) -> Optional[str]:
+    """Match a complete option label explicitly present in this item's source."""
+    labels = slot.metadata.get("answer_labels", {})
+    if not labels or not isinstance(value, str):
+        return None
+    text = unicodedata.normalize("NFKC", value).strip()
+    text = re.sub(r"[*_`]", "", text)
+    text = re.split(r"\bbecause\b|因为|理由[:：]|解释[:：]", text, maxsplit=1, flags=re.I)[0]
+    text = re.sub(r"^(?:\b(?:I\s+)?(?:choose|select|pick|answer|response|choice)(?:\s+is)?\b|我(?:选择|选)|选择|答案|回答|选项)\s*[:：=]?\s*", "", text, flags=re.I)
+    key = text.strip(" \t\r\n.。!！").casefold()
+    code = labels.get(key)
+    return code if code != value else None
+
+
 def _free_parse_value(slot: ScaleSlot, value: Any) -> ParsedAnswer:
     """Decode one self-formatted free-mode value without trusting its schema.
 
@@ -1634,6 +1674,10 @@ def _free_parse_value(slot: ScaleSlot, value: Any) -> ParsedAnswer:
 
     if value is None:
         return ParsedAnswer(slot_id=slot.slot_id, parse_status="missing")
+    original_value = value
+    source_option = _free_source_option(slot, value)
+    if source_option is not None:
+        value = source_option
     if _is_open_text_slot(slot):
         if isinstance(value, str) and value.strip():
             return ParsedAnswer(
@@ -1720,7 +1764,7 @@ def _free_parse_value(slot: ScaleSlot, value: Any) -> ParsedAnswer:
             parse_status="unparsed",
             parse_error="No numeric score appears in this answer.",
         )
-    return _free_numeric_answer(slot, value, numeric, status)
+    return _free_numeric_answer(slot, original_value, numeric, status)
 
 
 def _free_decode_body(lines: Sequence[str]) -> str:
