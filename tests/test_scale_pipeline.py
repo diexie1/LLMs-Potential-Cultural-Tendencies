@@ -48,6 +48,7 @@ class ScalePipelineTests(unittest.TestCase):
                     workbook.save(path)
                     workbook.close()
                     scale = load_scale_file(path)
+                    self.assertEqual(scale.name, path.stem)
                     self.assertIsNotNone(getattr(scale, language))
                     self.assertIsNone(getattr(scale, "ch" if language == "en" else "en"))
 
@@ -66,6 +67,7 @@ class ScalePipelineTests(unittest.TestCase):
                     workbook.save(path)
                     workbook.close()
                     scale = load_scale_file(path)
+                    self.assertEqual(scale.name, path.stem)
                     self.assertEqual((scale.en.title, scale.ch.title), expected)
 
     def test_loader_keeps_task_setting_as_context_and_extracts_image(self):

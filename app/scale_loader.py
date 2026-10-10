@@ -532,11 +532,11 @@ def load_scale_file(path: Path) -> ScaleFile:
             ch = _parse_sheet(wb["Sheet2"], "ch", path)
         # 标准名称明确语言；其余工作表按顺序填补未命名的语言。
         # 不得把仅有的 Sheet2 再作为英文读取，也不复用已分配的工作表。
-        remaining = iter(name for name in wb.sheetnames if name not in {"Sheet1", "Sheet2"})
-        if "Sheet1" not in wb.sheetnames and (name := next(remaining, None)):
-            en = _parse_sheet(wb[name], "en", path)
-        if "Sheet2" not in wb.sheetnames and (name := next(remaining, None)):
-            ch = _parse_sheet(wb[name], "ch", path)
+        remaining = iter(sheet_name for sheet_name in wb.sheetnames if sheet_name not in {"Sheet1", "Sheet2"})
+        if "Sheet1" not in wb.sheetnames and (sheet_name := next(remaining, None)):
+            en = _parse_sheet(wb[sheet_name], "en", path)
+        if "Sheet2" not in wb.sheetnames and (sheet_name := next(remaining, None)):
+            ch = _parse_sheet(wb[sheet_name], "ch", path)
         return ScaleFile(path=path, name=name, en=en, ch=ch)
     finally:
         wb.close()
