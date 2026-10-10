@@ -79,6 +79,7 @@ class _Record:
     final_summary: bool = False
     sequence_list: bool = False
     identified_slot: Optional[str] = None
+    explicit_number: bool = False
 
     @property
     def body(self):
@@ -310,7 +311,8 @@ def _records(text: str, slots: Sequence[ScaleSlot]) -> list[_Record]:
         if marker:
             original_marker = _ITEM.match(_source_line(raw))
             current = _Record(int(marker.group(1)), context, section,
-                              [original_marker.group(2) if original_marker else raw], segment=segment, final_summary=final_summary)
+                              [original_marker.group(2) if original_marker else raw],
+                              segment=segment, final_summary=final_summary, explicit_number=True)
             records.append(current)
             continue
         if ios and re.search(r"[:：→]|[—–]", line) and len(_ios_relations(line)) == 1:
@@ -372,6 +374,27 @@ def _question_tail(slot: ScaleSlot, line: str) -> Optional[str]:
         # A spaced ASCII dash after the exact source question is a separator;
         # a signed value such as -2 keeps its minus sign.
         return re.sub(r"^-\s+", "", tail, count=1)
+    # Fallback: the model may abbreviate a long item by dropping parenthetical
+    # examples / event clauses (e.g. "（例如他的性格、态度或气质）"). The words
+    # outside parentheses still distinguish the four causal items, so align on
+    # the parenthesis-stripped core and read the value after the final marker.
+    if (slot.slot_id.startswith("attribution_s") and slot.section_id == "attribution_agreement"):
+        base = re.sub(r"（[^（）]*）|\([^()]*\)", "", question)
+        base = re.sub(r"\s+", "", base)
+        core_variants = {base}
+        # The model may also flip the pronoun while abbreviating (她/他).
+        for old, new in (("影响了她的行为", "影响了他的行为"),
+                         ("影响了他的行为", "影响了她的行为")):
+            if old in base:
+                core_variants.add(base.replace(old, new, 1))
+        line_sig = re.sub(r"\s+", "", line)
+        if len(base) >= 4 and any(line_sig.startswith(cv) for cv in core_variants):
+            value_match = re.search(r"[:：=]\s*([^:：=]+?)\s*$", line)
+            if value_match:
+                candidate = value_match.group(1).strip()
+                if re.match(r"^[—–][0-9]", candidate):
+                    return candidate
+                return candidate.lstrip("—– ")
     return None
 
 
@@ -641,8 +664,60 @@ def decode_free_response(text: str, slots: Sequence[ScaleSlot], *, allow_positio
             read = sum(a.parse_status in FREE_STATUS_READABLE for a in positional)
             return ParseResult(positional, "ok" if read == len(slots) else "partial" if read else "unparsed",
                                recovery=f"{FREE_PARSER_VERSION}-positional-v1")
+        # Uniform bare sequence: every token is the same readable value. Order
+        # is irrelevant (all identical), so this is unambiguous even without
+        # item numbers; tolerate at most two duplicated tokens.
+        uni_tokens = re.findall(r"[+-]?[0-9A-Za-z\u4e00-\u9fff]+", str(text))
+        if uni_tokens:
+            sample = uni_tokens[0]
+            if (all(tok == sample for tok in uni_tokens)
+                    and len(slots) <= len(uni_tokens) <= len(slots) + 2
+                    and all(_decode(s, sample).parse_status in FREE_STATUS_READABLE for s in slots)):
+                uniform_answers = []
+                for s in slots:
+                    dec = _decode(s, sample)
+                    dec.mapping_method = "uniform_bare_sequence"
+                    uniform_answers.append(dec)
+                return ParseResult(uniform_answers, "ok", recovery=FREE_PARSER_VERSION)
         reasoning_sections = {s.section_id for s in slots if s.slot_id.startswith("reasoning_")}
         if {"logical_validity", "conclusion_believability"}.issubset(reasoning_sections):
+            # Type-segregated recovery: a bare response may list the 24 yes/no
+            # logical decisions and the 16 numeric belief scores as two
+            # unlabelled blocks. Assign each token to the single task section
+            # that can read it; recover only when both tasks are exact/complete.
+            task_pairs = [(task, [i for i, s in enumerate(slots) if s.section_id == task])
+                          for task in ("logical_validity", "conclusion_believability")]
+            bare_tokens = [t.strip() for t in str(text).splitlines() if t.strip()]
+            # Valid only for fully unlabelled tokens; explicit numbers make the
+            # source-vs-display mapping ambiguous because the model may renumber.
+            has_item_numbers = any(_ITEM.match(_plain(t)) for t in bare_tokens)
+            assigned = {task: [] for task, _ in task_pairs}
+            usable = True
+            for tok in bare_tokens:
+                owners = [task for task, idx in task_pairs
+                          if any(_decode(slots[i], tok).parse_status in FREE_STATUS_READABLE for i in idx)]
+                if len(owners) != 1:
+                    usable = False
+                    break
+                assigned[owners[0]].append(tok)
+            if usable and not has_item_numbers and all(assigned[t] for t, _ in task_pairs):
+                both = [ParsedAnswer(slot_id=s.slot_id, parse_status="missing") for s in slots]
+                recovered_tasks = 0
+                for task, idx in task_pairs:
+                    seq = assigned[task]
+                    decoded_pairs = [(j, _decode(slots[j], tok)) for j, tok in zip(idx, seq)]
+                    if (len(seq) == len(idx)
+                            and all(dec.parse_status in FREE_STATUS_READABLE for _, dec in decoded_pairs)):
+                        for j, dec in decoded_pairs:
+                            dec.mapping_method = "typed_task_blocks"
+                            both[j] = dec
+                        recovered_tasks += 1
+                if recovered_tasks:
+                    read = sum(a.parse_status in FREE_STATUS_READABLE for a in both)
+                    if read == len(slots):
+                        return ParseResult(both, "ok", recovery=FREE_PARSER_VERSION)
+                    return ParseResult(both, "partial", recovery=FREE_PARSER_VERSION,
+                                       error="Only complete, unambiguous typed answer blocks were recovered; the other block was incomplete/mismatched and raw_response was retained.")
             for task in ("logical_validity", "conclusion_believability"):
                 task_indices = [i for i, s in enumerate(slots) if s.section_id == task]
                 task_answers = _free_positional_answers(text, [slots[i] for i in task_indices])

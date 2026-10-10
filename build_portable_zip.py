@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 from app import __version__
 
-DOCS = ("实验模式.md", "量表乱序规则.md", "便携发布-1.5.10.md", "答案解析规则.md")
+DOCS = ("实验模式.md", "量表乱序规则.md", "便携发布-1.5.11.md", "答案解析规则.md")
 REQUIRED_FILES = ("main.py", "launcher.py", "launch.bat", "README.md", "平台使用手册.md",
                   "LICENSE", "VERSION", "requirements.txt", "requirements-lock.txt",
                   "LLM-Cultural-Tendencies.exe", "大语言模型潜在文化倾向性研究.exe", "runtime/python.exe",
