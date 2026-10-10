@@ -125,6 +125,13 @@ def check_copy(archive: Path, base: Path, label: str, version: str, use_launcher
             loaded = request_json(url + "/api/scales")
             assert len(loaded["scales"]) == 1
             assert loaded["scales"][0]["en_n"] == loaded["scales"][0]["ch_n"] == 1
+            for language in ("en", "ch"):
+                preview = request_json(url + "/api/prompt-preview", {
+                    "scale_name": loaded["scales"][0]["name"], "language": language,
+                    "config": {"data_dir": "./data"},
+                })
+                assert "Synthetic question." in preview["prompt"], preview
+                assert preview["sections"], preview
             assert request_json(url + "/api/config", {"data_dir": "./data", "results_dir": "./results"})["ok"]
             assert (root / "user_config.json").is_file()
             assert request_json(url + "/api/meta")["version"] == version
@@ -144,7 +151,8 @@ def check_copy(archive: Path, base: Path, label: str, version: str, use_launcher
                 assert request_json(url + "/api/health")["pid"] == health["pid"]
             return {"path_case": label, "launcher": use_launcher, "renamed": use_launcher,
                     "system_python_on_path": False, "version": version, "status": "passed",
-                    "occupied_port_handled": bool(blocker), "manifest_files": len(manifest["files"])}
+                    "occupied_port_handled": bool(blocker), "manifest_files": len(manifest["files"]),
+                    "prompt_preview_languages": ["en", "ch"]}
         except Exception:
             output.flush()
             print(output_path.read_text(encoding="utf-8", errors="replace"), flush=True)

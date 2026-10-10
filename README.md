@@ -4,11 +4,11 @@
 
 当前源码版本：**1.5.10**。项目负责人：南京师范大学心理学院谢恩慧；平台制作人：南京师范大学心理学院李佳斌。
 
-**使用最新解析器：[下载当前源码 ZIP](https://github.com/diexie1/LLMs-Potential-Cultural-Tendencies/archive/refs/heads/main.zip)，按下方“从源码运行”准备环境。**
+**Windows 用户：[下载 1.5.10 便携版](https://github.com/diexie1/LLMs-Potential-Cultural-Tendencies/releases/download/v1.5.10/LLM-Cultural-Tendencies-Windows-x64-v1.5.10.zip)，无需安装 Python。**
 
-Windows 现有[便携下载](https://github.com/diexie1/LLMs-Potential-Cultural-Tendencies/releases/latest)为 **1.5.6**，尚未包含 1.5.10 的解析修复。已使用便携版的用户，也可以先备份旧平台，将当前源码覆盖到旧平台对应位置，保留原有 `runtime`、`data`、`results` 和本机配置，关闭旧后台后使用 `launch.bat` 启动新版。
+新版便携包包含 **1.5.10** 源码、`free-text-v14` 解析器和对应启动器。升级时先关闭旧平台，将新版解压到新文件夹，再复制自己的 `data`、`results` 和 `user_config.json`；旧平台可留作备份。若本机配置使用绝对路径，请在工作台确认数据和结果目录。
 
-下载 `LLM-Cultural-Tendencies-Windows-x64-v1.5.6.zip`，先解压完整压缩包，然后：
+下载 `LLM-Cultural-Tendencies-Windows-x64-v1.5.10.zip`，先解压完整压缩包，然后：
 
 1. 将你自己的量表 Excel 文件放入 `data` 文件夹；本项目不附带研究量表。
 2. 双击 `LLM-Cultural-Tendencies.exe`，也可以使用同目录的中文启动器。
@@ -70,4 +70,4 @@ runtime\python.exe build_portable_zip.py
 
 当前解析器为 `free-text-v14`。按各题原文读取数值、选项、IOS 图示编号与开放文字；支持原文明确列出的选项文字，分任务使用各自的选项定义。直觉推理分别提取第一任务的是/否和第二任务的带符号分数，结合当次保存的题目顺序对应重复题号。人权敏感任务支持同一行用分号分隔的两个原题答案；归因任务兼容已观察到的“影响了她/他的行为”抄写差异，仍要求其余题干一致。统一检查整数和有限数值，避免科学计数法截断、否定判断反转、错误题号或情境对应。区间保留区间；乱序编号有歧义时，仅恢复两种编号解释下结果相同的值。旧记录可以离线核验或重解析，不需要重新调用模型。详见 [答案解析规则](docs/答案解析规则.md)。
 
-上方 `1.5.6` 便携包尚未包含本次源码更新。发布与路径兼容说明见 [便携发布说明](docs/便携发布-1.5.6.md)。
+发布与路径兼容说明见 [便携发布说明](docs/便携发布-1.5.10.md)。源码用户可[下载当前源码 ZIP](https://github.com/diexie1/LLMs-Potential-Cultural-Tendencies/archive/refs/heads/main.zip)，按上方“从源码运行”准备环境。
